@@ -1,0 +1,30 @@
+{
+	"schemaVersion": 1,
+	"id": "cinecam",
+	"version": "${version}",
+	"name": "Cinecam",
+	"description": "Cinematic free-cameras that orbit, spiral, crane, dolly and fly past the player. Client-side only.",
+	"authors": [
+		"Cinecam contributors"
+	],
+	"license": "MIT",
+	"icon": "assets/cinecam/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"dev.cinecam.CinecamClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "cinecam.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

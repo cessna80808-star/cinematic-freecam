@@ -1,0 +1,12 @@
+{
+	"required": true,
+	"package": "dev.cinecam.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"CameraMixin",
+		"HudMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
