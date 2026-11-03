@@ -373,8 +373,11 @@ public final class CineCamera {
 
         if (minecraft.player != null && dynamicEnabled) {
             boolean attacking = minecraft.player.swinging || minecraft.player.swingTime > 0;
-            boolean combat = minecraft.player.hurtTime > 0
-                || (attacking && minecraft.crosshairPickEntity != null);
+            boolean entityTarget = attacking
+                && minecraft.hitResult != null
+                && minecraft.hitResult.getType() == HitResult.Type.ENTITY
+                && isValidTarget(minecraft.crosshairPickEntity, minecraft.player);
+            boolean combat = minecraft.player.hurtTime > 0 || entityTarget;
             boolean mining = attacking && minecraft.hitResult instanceof BlockHitResult;
 
             if (combat) {

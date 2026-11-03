@@ -90,7 +90,7 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.4.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.4.1.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -170,7 +170,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.4.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.4.1.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
