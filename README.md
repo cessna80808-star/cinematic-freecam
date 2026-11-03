@@ -65,6 +65,15 @@ open shot exists. The chosen rig is eased into place, so an obstruction changes
 the shot instead of jerking the lens. A clearance pass keeps the camera out of
 blocks; disable `avoidGeometry` for a completely free camera.
 
+While a shot is engaged, Cinecam also draws the local player through occluding
+terrain using a depth-test-free copy of the vanilla entity render type. This is
+deliberately a player-only pass rather than section deletion: chunk sections are
+16x16x16, so hiding a section at the normal six-block camera distance would
+remove the floor and walls around the player as well. Toggle it with
+`/freecam` under **See-through**, the `seeThroughPlayer` config field, or the
+studio button. The base player model is affected; armour layers and name tags
+still use vanilla depth sorting.
+
 ## Smooth emerge and return
 
 Toggling the camera on starts at the player's eyes and pulls out into the shot;
@@ -99,7 +108,7 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.6.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.7.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -115,8 +124,8 @@ path diagrams, not live 3D renders, so the screen stays lightweight.
 The right side is a live control panel for camera on/off, adaptive/classic
 framing, playback speed, FOV, orbit distance, height, aim height, wall
 clearance, intro time, handheld shake, full-frame/letterbox, HUD visibility,
-director mode and wall avoidance. Changes apply immediately and are saved to
-`config/cinecam.json`; the game keeps running behind the studio.
+director mode, wall avoidance and see-through player. Changes apply immediately
+and are saved to `config/cinecam.json`; the game keeps running behind the studio.
 
 ## Controls
 
@@ -131,8 +140,10 @@ director mode and wall avoidance. Changes apply immediately and are saved to
 
 All six can be rebound in **Options → Controls → Cinecam**.
 
-The shortcuts also poll raw key state, so they keep working when an external
-client such as Nebula leaves the mouse ungrabbed or a GUI screen owns input.
+The shortcuts are polled on both the client tick and the camera render pass, and
+read raw GLFW state, so they keep working when an external client such as Nebula
+leaves the mouse ungrabbed or a GUI screen owns input. Render-pass polling also
+lets a toggle start its blend while a pausing screen has the mouse released.
 Minecraft's normal key handling is still used, so rebinding works as usual.
 
 The current shot name appears briefly in the corner whenever it changes.
@@ -182,6 +193,7 @@ and on servers:
 | `roll` | `2.5` | Maximum Dutch-angle roll in degrees. |
 | `shake` | `0.02` | Handheld micro-shake in blocks (`0` disables). |
 | `avoidGeometry` | `true` | Clip the camera against walls, floors and ceilings. |
+| `seeThroughPlayer` | `true` | Draw the local player through terrain between the freecam and the subject. |
 | `cameraMargin` | `0.35` | Gap kept between the camera and the surface it clipped against. |
 | `cutDip` | `true` | Dip through black when the shot changes. |
 | `directorSeconds` | `20.0` | Seconds between automatic shot changes (`0` disables). |
@@ -197,7 +209,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.6.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.7.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
@@ -258,6 +270,8 @@ without editing the file:
 - Flyby's loop is a hard cut (a new shot every 18 seconds) rather than a
   continuous orbit.
 - Purely client-side: other players only ever see your normal view.
+- See-through applies to the local player's base model. Armour layers and name
+  tags can still be hidden by thick geometry.
 
 ## License
 

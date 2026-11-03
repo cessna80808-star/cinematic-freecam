@@ -1,0 +1,9 @@
+accessWidener v2 named
+
+# RenderType.create is package-private in 26.2. Cinecam needs it to build a
+# player-only RenderType whose depth test is disabled.
+accessible method net/minecraft/client/renderer/rendertype/RenderType create (Ljava/lang/String;Lnet/minecraft/client/renderer/rendertype/RenderSetup;)Lnet/minecraft/client/renderer/rendertype/RenderType;
+
+# Reuse the vanilla entity shader/layouts, then override only the depth state.
+accessible field net/minecraft/client/renderer/RenderPipelines ENTITY_SNIPPET Lcom/mojang/blaze3d/pipeline/RenderPipeline$Snippet;
+accessible method net/minecraft/client/renderer/RenderPipelines register (Lcom/mojang/blaze3d/pipeline/RenderPipeline;)Lcom/mojang/blaze3d/pipeline/RenderPipeline;

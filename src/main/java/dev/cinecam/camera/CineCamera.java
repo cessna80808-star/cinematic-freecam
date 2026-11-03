@@ -389,6 +389,10 @@ public final class CineCamera {
         delta = Mth.clamp(delta, 0.0, 0.1);
 
         Minecraft minecraft = Minecraft.getInstance();
+        // Keep the shot frozen while paused, but let the emerge/return blend
+        // and the cut fade finish. A camera toggle must be visible even when
+        // an input-owning client has the mouse ungrabbed behind a pause screen.
+        double transitionDelta = delta;
         if (minecraft.isPaused()) {
             delta = 0.0;
         }
@@ -412,12 +416,12 @@ public final class CineCamera {
         }
 
         if (cutFade > 0.0) {
-            cutFade = Math.max(0.0, cutFade - delta / CUT_SECONDS);
+            cutFade = Math.max(0.0, cutFade - transitionDelta / CUT_SECONDS);
         }
 
         double goal = enabled ? 1.0 : 0.0;
         if (blend != goal) {
-            double step = config.introSeconds < 0.05 ? 1.0 : delta / config.introSeconds;
+            double step = config.introSeconds < 0.05 ? 1.0 : transitionDelta / config.introSeconds;
             blend = goal > blend ? Math.min(goal, blend + step) : Math.max(goal, blend - step);
         }
 
@@ -429,7 +433,7 @@ public final class CineCamera {
                 settleTimer = SETTLE_SECONDS;
             }
             if (settleTimer > 0.0) {
-                settleTimer = Math.max(0.0, settleTimer - delta);
+                settleTimer = Math.max(0.0, settleTimer - transitionDelta);
             }
             if (settleTimer <= 0.0) {
                 engaged = false;

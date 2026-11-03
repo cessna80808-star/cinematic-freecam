@@ -70,6 +70,21 @@ public final class CinecamClient implements ClientModInitializer {
     }
 
     private void onEndTick(Minecraft minecraft) {
+        pollInput();
+    }
+
+    /**
+     * Polls the shortcuts from both the client tick and the camera render pass.
+     * The render pass matters for clients that leave the mouse ungrabbed or own
+     * input with a non-pausing screen: vanilla's click queue can be empty there
+     * even though the physical key is down. Polling is edge-based, so calling
+     * this from both places cannot toggle twice for one press.
+     */
+    public void pollInput() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.getWindow() == null || camera == null) {
+            return;
+        }
         if (pressed(toggleKey, 0, minecraft)) {
             camera.toggle();
         }
@@ -103,12 +118,18 @@ public final class CinecamClient implements ClientModInitializer {
             clicked = true;
         }
 
+        long handle = minecraft.getWindow().handle();
+        if (GLFW.glfwGetWindowAttrib(handle, GLFW.GLFW_FOCUSED) != GLFW.GLFW_TRUE) {
+            keyWasDown[index] = false;
+            return clicked;
+        }
+
         InputConstants.Key key = InputConstants.getKey(mapping.saveString());
         boolean down = false;
         if (key.getValue() >= 0 && key.getType() == InputConstants.Type.KEYSYM) {
-            down = GLFW.glfwGetKey(minecraft.getWindow().handle(), key.getValue()) == GLFW.GLFW_PRESS;
+            down = GLFW.glfwGetKey(handle, key.getValue()) == GLFW.GLFW_PRESS;
         } else if (key.getValue() >= 0 && key.getType() == InputConstants.Type.MOUSE) {
-            down = GLFW.glfwGetMouseButton(minecraft.getWindow().handle(), key.getValue()) == GLFW.GLFW_PRESS;
+            down = GLFW.glfwGetMouseButton(handle, key.getValue()) == GLFW.GLFW_PRESS;
         }
 
         boolean edge = down && !keyWasDown[index];

@@ -61,6 +61,10 @@ public abstract class CameraMixin {
         if (client == null) {
             return;
         }
+        // Also poll here, not only on the client tick. Some input-owning
+        // clients stop producing KeyMapping clicks while the mouse is
+        // ungrabbed; the physical key is still readable at render time.
+        client.pollInput();
         CineCamera camera = client.camera();
         if (camera == null || !camera.isEngaged()) {
             return;

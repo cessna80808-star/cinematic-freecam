@@ -35,7 +35,7 @@ public final class CinecamScreen extends Screen {
     private static final int FOOTER_HEIGHT = 36;
     private static final int PANEL_GAP = 10;
     private static final int CARD_GAP = 6;
-    private static final int SETTINGS_ROWS = 14;
+    private static final int SETTINGS_ROWS = 15;
     private static final int SETTINGS_GAP = 2;
 
     private static final int COLOR_OVERLAY = 0xC4080C12;
@@ -59,6 +59,7 @@ public final class CinecamScreen extends Screen {
     private Button hudButton;
     private Button directorButton;
     private Button geometryButton;
+    private Button seeThroughButton;
 
     private int panelTop;
     private int panelBottom;
@@ -216,6 +217,14 @@ public final class CinecamScreen extends Screen {
             config.save(CinecamClient.LOGGER);
             this.refreshLabels();
         });
+        y += rowHeight + SETTINGS_GAP;
+
+        this.seeThroughButton = this.addButton(x, y, width, rowHeight, "See-through", button -> {
+            CinecamConfig config = this.camera.config();
+            config.seeThroughPlayer = !config.seeThroughPlayer;
+            config.save(CinecamClient.LOGGER);
+            this.refreshLabels();
+        });
     }
 
     private Button addButton(int x, int y, int width, int height, String label, Button.OnPress onPress) {
@@ -251,6 +260,7 @@ public final class CinecamScreen extends Screen {
         setButtonLabel(this.hudButton, "HUD: " + (config.hideHud ? "HIDDEN" : "SHOWN"));
         setButtonLabel(this.directorButton, "Director: " + (this.camera.isDirectorEnabled() ? "ON" : "OFF"));
         setButtonLabel(this.geometryButton, "Wall avoid: " + (config.avoidGeometry ? "ON" : "OFF"));
+        setButtonLabel(this.seeThroughButton, "See-through: " + (config.seeThroughPlayer ? "ON" : "OFF"));
     }
 
     private static void setButtonLabel(Button button, String label) {

@@ -53,6 +53,8 @@ public final class CinecamConfig {
     public double shake = 0.02;
     /** Pull the camera in when geometry would block the view. */
     public boolean avoidGeometry = true;
+    /** Draw the local player through terrain that sits between the camera and the subject. */
+    public boolean seeThroughPlayer = true;
     /** How far the camera stays away from the surface it clipped against, in blocks. */
     public double cameraMargin = 0.35;
     /** Dip through black when the shot changes, so cuts land cleanly. */
@@ -130,6 +132,7 @@ public final class CinecamConfig {
         this.roll = other.roll;
         this.shake = other.shake;
         this.avoidGeometry = other.avoidGeometry;
+        this.seeThroughPlayer = other.seeThroughPlayer;
         this.cameraMargin = other.cameraMargin;
         this.cutDip = other.cutDip;
         this.directorSeconds = other.directorSeconds;
