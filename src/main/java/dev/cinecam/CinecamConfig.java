@@ -19,8 +19,8 @@ public final class CinecamConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path PATH = FabricLoader.getInstance().getConfigDir().resolve("cinecam.json");
 
-    /** Active shot. */
-    public Shot shot = Shot.ORBIT;
+    /** Active shot. Dynamic adapts to what the player is doing. */
+    public Shot shot = Shot.DYNAMIC;
     /** Base playback speed multiplier. */
     public double speed = 1.0;
     /** Base orbit radius in blocks. */
@@ -47,6 +47,10 @@ public final class CinecamConfig {
     public double roll = 2.5;
     /** Handheld micro-shake in blocks. Set to 0 for a locked-off camera. */
     public double shake = 0.02;
+    /** Pull the camera in when geometry would block the view. */
+    public boolean avoidGeometry = true;
+    /** How far the camera stays away from the surface it clipped against, in blocks. */
+    public double cameraMargin = 0.35;
     /** Dip through black when the shot changes, so cuts land cleanly. */
     public boolean cutDip = true;
     /** Seconds between automatic shot changes in director mode (0 disables it). */
@@ -84,7 +88,7 @@ public final class CinecamConfig {
 
     public void normalize() {
         if (shot == null) {
-            shot = Shot.ORBIT;
+            shot = Shot.DYNAMIC;
         }
         speed = Mth.clamp(speed, 0.1, 5.0);
         radius = Mth.clamp(radius, 1.0, 40.0);
@@ -96,6 +100,7 @@ public final class CinecamConfig {
         letterboxRatio = Mth.clamp(letterboxRatio, 1.0, 4.0);
         roll = Mth.clamp(roll, -30.0, 30.0);
         shake = Mth.clamp(shake, 0.0, 0.5);
+        cameraMargin = Mth.clamp(cameraMargin, 0.05, 1.5);
         directorSeconds = Mth.clamp(directorSeconds, 0.0, 600.0);
     }
 
@@ -114,6 +119,8 @@ public final class CinecamConfig {
         this.hideHud = other.hideHud;
         this.roll = other.roll;
         this.shake = other.shake;
+        this.avoidGeometry = other.avoidGeometry;
+        this.cameraMargin = other.cameraMargin;
         this.cutDip = other.cutDip;
         this.directorSeconds = other.directorSeconds;
         this.director = other.director;

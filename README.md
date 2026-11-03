@@ -2,7 +2,7 @@
 
 Client-side cinematic cameras for **Minecraft Java 26.2** (the "Chaos Cubed" drop).
 
-Cinecam takes over your local camera and flies it around the player along nine
+Cinecam takes over your local camera and flies it around the player along ten
 different previs-style shots — perfect for trailers, screenshots, timelapses and
 machinima. It never touches the server: your movement, hitboxes and gameplay are
 exactly the same, only your view changes.
@@ -11,6 +11,7 @@ exactly the same, only your view changes.
 
 | Shot | What it does |
 | --- | --- |
+| **Dynamic** | Reads what you are doing and adapts: behind the shoulder while mining, wider and higher in combat, a trailing orbit while exploring. Default shot. |
 | **Orbit** | A slow, perfectly steady circle around the player. The locked-off establishing shot. |
 | **Spiral** | Circles while climbing and sinking, with the radius breathing in and out. |
 | **Crane** | A jib-style orbit that starts high, descends and pushes in, then rises again. |
@@ -25,6 +26,32 @@ Every shot eases in and out over `introSeconds` instead of snapping, looks at th
 player, and follows them with a small exponential lag so walking doesn't jitter
 the frame. Handheld micro-shake is on by default; set `shake` to `0` for a
 locked-off camera.
+
+## Dynamic something that reacts
+
+The **Dynamic** shot (the default) watches the player and blends between three
+framings:
+
+- **Mining** — when you swing at a block, the camera slides behind your shoulder
+  and looks at your back, keeping the face you are mining on the far side of you.
+  It stays on your side of the wall instead of clipping into it.
+- **Combat** — when you are hit or strike an entity, the camera pulls back into a
+  wide rear three-quarter view, with a slow sway, and the collision solver keeps
+  it clear of nearby walls.
+- **Exploring** — otherwise it drifts in a gentle orbit whose radius expands with
+  your movement speed, so sprinting opens the frame up.
+
+The sub-framings cross-fade with smoothed weights, so a fight starting mid-mine
+does not snap.
+
+## Geometry-aware camera
+
+Every shot is clipped against block collision from the look-at point out to the
+camera. If a wall, ceiling or floor is in the way, the camera snaps to the near
+side of it with a configurable margin, then eases back out when the view clears.
+The camera is also nudged out of any block it still overlaps. This is what keeps
+low orbits out of terrain and combat framing out of walls; disable it with
+`avoidGeometry` if you want a true free camera.
 
 ## Smooth emerge and return
 
@@ -52,7 +79,7 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.1.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.2.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -80,8 +107,8 @@ The current shot name appears briefly in the corner whenever it changes.
 /cinecam on         engage the camera
 /cinecam off        release the camera
 /cinecam toggle     toggle it
-/cinecam shot orbit play a specific shot (orbit, spiral, crane, dolly, flyby,
-                    figure8, topdown, pendulum, vertigo)
+/cinecam shot orbit play a specific shot (dynamic, orbit, spiral, crane, dolly,
+                    flyby, figure8, topdown, pendulum, vertigo)
 /cinecam next       jump to the next shot
 /cinecam freeze     freeze or resume the shot
 /cinecam director   toggle auto-director
@@ -95,7 +122,7 @@ The current shot name appears briefly in the corner whenever it changes.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `shot` | `"ORBIT"` | Active shot. |
+| `shot` | `"DYNAMIC"` | Active shot. |
 | `speed` | `1.0` | Base playback speed (the F8 key multiplies on top of this). |
 | `radius` | `6.0` | Orbit radius in blocks. |
 | `height` | `2.4` | Camera height above the player's feet. |
@@ -109,6 +136,8 @@ The current shot name appears briefly in the corner whenever it changes.
 | `hideHud` | `true` | Hide the hotbar, chat, crosshair, etc. |
 | `roll` | `2.5` | Maximum Dutch-angle roll in degrees. |
 | `shake` | `0.02` | Handheld micro-shake in blocks (`0` disables). |
+| `avoidGeometry` | `true` | Clip the camera against walls, floors and ceilings. |
+| `cameraMargin` | `0.35` | Gap kept between the camera and the surface it clipped against. |
 | `cutDip` | `true` | Dip through black when the shot changes. |
 | `directorSeconds` | `20.0` | Seconds between automatic shot changes (`0` disables). |
 | `director` | `false` | Whether auto-director is enabled. |
@@ -123,7 +152,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.1.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.2.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
@@ -160,6 +189,8 @@ without editing the file:
 - During the intro it interpolates from the player's eye pose to the shot; during
   the outro it interpolates back to the eyes (or to the vanilla third-person
   camera if that is the perspective being restored).
+- `CineCamera#pose` computes each shot, blends the Dynamic mining/combat
+  framings, then runs the collision clip and distance smoothing.
 - `CameraMixin` also overrides `Camera#calculateFov` so the custom FOV and the
   Vertigo lens offset reach the projection matrix.
 - `HudMixin` cancels HUD extraction while engaged (setting the vanilla
@@ -171,10 +202,10 @@ without editing the file:
 
 ## Limitations
 
-- The camera is a free camera and does not collide with blocks. That is
-  intentional, but it means a low orbit can clip through terrain.
-- Interactions still aim from the cinematic camera, so avoid mining or placing
-  blocks while a shot is running.
+- Collision uses a single ray from the player to the camera, so very thin gaps
+  can still show a sliver of geometry at the frame edge.
+- Interactions still aim from the cinematic camera while engaged; use the freeze
+  key for screenshots rather than mining with the cinematic camera running.
 - Flyby's loop is a hard cut (a new shot every 18 seconds) rather than a
   continuous orbit.
 - Purely client-side: other players only ever see your normal view.

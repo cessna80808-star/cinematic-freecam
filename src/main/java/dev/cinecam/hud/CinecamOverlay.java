@@ -5,6 +5,7 @@ import dev.cinecam.camera.CineCamera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 
 /**
  * Overlay drawing for cinematic bars, the dip-to-black cut and the shot toast.
@@ -31,7 +32,7 @@ public final class CinecamOverlay {
             }
         }
 
-        float fade = (float) MthClamp(camera.cutFade(), 0.0, 1.0);
+        float fade = Mth.clamp((float) camera.cutFade(), 0.0F, 1.0F);
         if (fade > 0.0F) {
             int alpha = ((int) (fade * 255.0F)) & 0xFF;
             graphics.fill(0, 0, width, height, alpha << 24);
@@ -49,9 +50,5 @@ public final class CinecamOverlay {
         int color = (((int) (alpha * 255.0F)) & 0xFF) << 24 | 0x00FFFFFF;
         int y = Math.max(4, height - bar - 16);
         graphics.text(Minecraft.getInstance().font, Component.literal(toast), 8, y, color, true);
-    }
-
-    private static double MthClamp(double value, double min, double max) {
-        return Math.max(min, Math.min(max, value));
     }
 }

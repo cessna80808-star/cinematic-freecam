@@ -4,8 +4,12 @@ import dev.cinecam.CinecamConfig;
 import dev.cinecam.Shot;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +17,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Owns the cinematic camera state: which shot is playing, how far the intro or
  * outro blend is, how long the shot has been running, and where the camera
- * should be this frame.
+ * should be this frame. Also adapts the Dynamic shot and keeps every shot out
+ * of geometry.
  */
 public final class CineCamera {
     private static final Logger LOGGER = LoggerFactory.getLogger("cinecam");
@@ -40,6 +45,12 @@ public final class CineCamera {
     private int speedIndex = 2;
     private String toast = "";
     private long toastUntil;
+
+    private double miningTimer;
+    private double combatTimer;
+    private double miningWeight;
+    private double combatWeight;
+    private double collisionDistance = -1.0;
 
     public CineCamera(CinecamConfig config) {
         this.config = config;
@@ -107,6 +118,11 @@ public final class CineCamera {
             this.anchor = null;
             this.staticAnchor = null;
             this.directorTimer = 0.0;
+            this.miningTimer = 0.0;
+            this.combatTimer = 0.0;
+            this.miningWeight = 0.0;
+            this.combatWeight = 0.0;
+            this.collisionDistance = -1.0;
             Minecraft minecraft = Minecraft.getInstance();
             this.savedCameraType = minecraft.options.getCameraType();
             minecraft.options.setCameraType(CameraType.THIRD_PERSON_BACK);
@@ -154,6 +170,7 @@ public final class CineCamera {
         config.shot = shot;
         config.save(LOGGER);
         directorTimer = 0.0;
+        collisionDistance = -1.0;
         cutFade = config.cutDip ? 1.0 : 0.0;
         showToast(shot.displayName());
     }
@@ -250,7 +267,11 @@ public final class CineCamera {
             phase += delta * speedFactor();
         }
 
-        if (enabled && directorEnabled && config.directorSeconds > 0.0) {
+        if (!frozen) {
+            updateDynamic(delta);
+        }
+
+        if (enabled && directorEnabled && !frozen && config.directorSeconds > 0.0) {
             directorTimer += delta;
             if (directorTimer >= config.directorSeconds) {
                 directorTimer = 0.0;
@@ -272,6 +293,37 @@ public final class CineCamera {
             engaged = false;
             restoreCameraType();
         }
+    }
+
+    /**
+     * Watches what the player is doing and eases the Dynamic shot towards the
+     * right framing. Mining gets a behind-the-shoulder view, combat a wider
+     * rear three-quarter view, and moving expands the orbit radius.
+     */
+    private void updateDynamic(double delta) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player != null) {
+            boolean attacking = minecraft.player.swinging || minecraft.player.swingTime > 0;
+            boolean combat = minecraft.player.hurtTime > 0
+                || (attacking && minecraft.crosshairPickEntity != null);
+            boolean mining = attacking && minecraft.hitResult instanceof BlockHitResult;
+
+            if (combat) {
+                combatTimer = 2.5;
+                miningTimer = 0.0;
+            } else if (mining) {
+                miningTimer = 1.2;
+            }
+        }
+
+        miningTimer = Math.max(0.0, miningTimer - delta);
+        combatTimer = Math.max(0.0, combatTimer - delta);
+
+        double combatTarget = combatTimer > 0.0 ? 1.0 : 0.0;
+        double miningTarget = combatTimer > 0.0 ? 0.0 : (miningTimer > 0.0 ? 1.0 : 0.0);
+        double ease = 1.0 - Math.exp(-delta * 6.0);
+        miningWeight += (miningTarget - miningWeight) * ease;
+        combatWeight += (combatTarget - combatWeight) * ease;
     }
 
     /**
@@ -302,6 +354,13 @@ public final class CineCamera {
         double roll;
 
         switch (config.shot) {
+            case DYNAMIC -> {
+                theta = t * 0.16;
+                double movement = cameraEntity.getDeltaMovement().horizontalDistance();
+                radius = config.radius + Math.min(2.5, movement * 8.0);
+                height = config.height + 0.5 * Math.sin(t * 0.33);
+                roll = config.roll * 0.25 * Math.sin(t * 0.21);
+            }
             case ORBIT -> {
                 theta = t * 0.20;
                 roll = 0.0;
@@ -381,10 +440,116 @@ public final class CineCamera {
         }
 
         Vec3 pos = new Vec3(anchor.x + x, anchor.y + height, anchor.z + z);
+        if (config.shot == Shot.DYNAMIC) {
+            pos = dynamicPosition(cameraEntity, partialTicks, anchor, pos);
+        }
+        pos = resolveGeometry(cameraEntity, lookAt, pos);
+
         Vec3 direction = lookAt.subtract(pos);
         double horizontal = Math.sqrt(direction.x * direction.x + direction.z * direction.z);
         float yaw = (float) Math.toDegrees(Math.atan2(-direction.x, direction.z));
         float pitch = (float) Math.toDegrees(Math.atan2(-direction.y, horizontal));
         return new CameraPose(pos, yaw, pitch, (float) roll);
+    }
+
+    /**
+     * Blends the Dynamic shot's base orbit towards the mining and combat
+     * framings. Mining puts the camera behind the player's shoulder so the
+     * wall they are facing stays in front of them, not in front of the lens.
+     */
+    private Vec3 dynamicPosition(Entity entity, float partialTicks, Vec3 anchor, Vec3 base) {
+        Vec3 result = base;
+        double yaw = Math.toRadians(entity.getViewYRot(partialTicks));
+        Vec3 forward = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw));
+        Vec3 right = new Vec3(Math.cos(yaw), 0.0, Math.sin(yaw));
+
+        if (miningWeight > 0.001) {
+            Vec3 mining = anchor.add(0.0, 1.9, 0.0)
+                .subtract(forward.scale(4.2))
+                .add(right.scale(1.15));
+            result = result.lerp(mining, miningWeight);
+        }
+
+        if (combatWeight > 0.001) {
+            double angle = yaw + Math.PI + 0.5 * Math.sin(phase * 0.55);
+            double distance = Math.max(config.radius, 7.0);
+            Vec3 combat = anchor.add(0.0, 3.0 + 0.3 * Math.sin(phase * 0.8), 0.0)
+                .add(new Vec3(-Math.sin(angle) * distance, 0.0, Math.cos(angle) * distance));
+            result = result.lerp(combat, combatWeight);
+        }
+
+        return result;
+    }
+
+    /**
+     * Clips the camera ray against block collision and keeps a margin from the
+     * surface. Snaps in immediately when something blocks the view, eases back
+     * out when it is clear, and nudges the camera out of any block it still
+     * overlaps.
+     */
+    private Vec3 resolveGeometry(Entity entity, Vec3 focus, Vec3 desired) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!config.avoidGeometry || minecraft.level == null) {
+            collisionDistance = -1.0;
+            return desired;
+        }
+
+        Vec3 ray = desired.subtract(focus);
+        double rayLength = ray.length();
+        if (rayLength < 1.0E-4) {
+            return desired;
+        }
+        Vec3 direction = ray.scale(1.0 / rayLength);
+        Vec3 result = desired;
+
+        HitResult hit = minecraft.level.clip(new ClipContext(
+            focus,
+            desired,
+            ClipContext.Block.COLLIDER,
+            ClipContext.Fluid.NONE,
+            entity
+        ));
+        if (hit.getType() != HitResult.Type.MISS) {
+            double hitDistance = hit.getLocation().distanceTo(focus);
+            double safeDistance = Math.max(0.6, hitDistance - config.cameraMargin);
+            result = focus.add(direction.scale(Math.min(safeDistance, rayLength)));
+        }
+
+        for (int i = 0; i < 8 && nearSolid(minecraft, result); i++) {
+            result = result.add(direction.scale(-0.35));
+        }
+
+        Vec3 offset = result.subtract(focus);
+        double distance = offset.length();
+        if (distance < 1.0E-4) {
+            return result;
+        }
+        if (collisionDistance < 0.0 || distance < collisionDistance) {
+            collisionDistance = distance;
+        } else {
+            collisionDistance += (distance - collisionDistance) * (1.0 - Math.exp(-frameDelta * 6.0));
+        }
+        return focus.add(offset.normalize().scale(collisionDistance));
+    }
+
+    private boolean nearSolid(Minecraft minecraft, Vec3 pos) {
+        if (solidAt(minecraft, pos)) {
+            return true;
+        }
+        double radius = 0.3;
+        return solidAt(minecraft, pos.add(radius, 0.0, 0.0))
+            || solidAt(minecraft, pos.add(-radius, 0.0, 0.0))
+            || solidAt(minecraft, pos.add(0.0, radius, 0.0))
+            || solidAt(minecraft, pos.add(0.0, -radius, 0.0))
+            || solidAt(minecraft, pos.add(0.0, 0.0, radius))
+            || solidAt(minecraft, pos.add(0.0, 0.0, -radius));
+    }
+
+    private boolean solidAt(Minecraft minecraft, Vec3 pos) {
+        if (minecraft.level == null) {
+            return false;
+        }
+        BlockPos blockPos = BlockPos.containing(pos.x, pos.y, pos.z);
+        return !minecraft.level.getBlockState(blockPos).getCollisionShape(minecraft.level, blockPos).isEmpty();
     }
 }
