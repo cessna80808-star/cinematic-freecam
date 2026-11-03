@@ -27,7 +27,7 @@ player, and follows them with a small exponential lag so walking doesn't jitter
 the frame. Handheld micro-shake is on by default; set `shake` to `0` for a
 locked-off camera.
 
-## Dynamic something that reacts
+## Dynamic mode
 
 The **Dynamic** shot (the default) watches the player and blends between three
 framings:
@@ -43,6 +43,12 @@ framings:
 
 The sub-framings cross-fade with smoothed weights, so a fight starting mid-mine
 does not snap.
+
+Press `F4` or run `/cinecam dynamic` to turn the adaptive framing off. Classic
+mode keeps the gentle Dynamic orbit but ignores mining, combat and movement
+speed, so every flight is predictable. Geometry avoidance is separate: set
+`avoidGeometry` to `false` as well if you want a completely unrestricted free
+camera.
 
 ## Geometry-aware camera
 
@@ -79,7 +85,7 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.2.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.3.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -93,8 +99,9 @@ director mode.
 | `F8` | Cycle speed (0.5x, 0.75x, 1x, 1.5x, 2x) |
 | `F9` | Freeze / resume the shot |
 | `F10` | Toggle auto-director |
+| `F4` | Toggle dynamic / classic camera |
 
-All five can be rebound in **Options → Controls → Cinecam**.
+All six can be rebound in **Options → Controls → Cinecam**.
 
 The current shot name appears briefly in the corner whenever it changes.
 
@@ -112,6 +119,7 @@ The current shot name appears briefly in the corner whenever it changes.
 /cinecam next       jump to the next shot
 /cinecam freeze     freeze or resume the shot
 /cinecam director   toggle auto-director
+/cinecam dynamic    toggle adaptive framing (or dynamic on/off)
 /cinecam speed      cycle speed
 /cinecam reload     re-read config/cinecam.json
 ```
@@ -123,6 +131,7 @@ The current shot name appears briefly in the corner whenever it changes.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `shot` | `"DYNAMIC"` | Active shot. |
+| `dynamic` | `true` | Adaptive mining/combat framing. `false` is classic, predictable framing. |
 | `speed` | `1.0` | Base playback speed (the F8 key multiplies on top of this). |
 | `radius` | `6.0` | Orbit radius in blocks. |
 | `height` | `2.4` | Camera height above the player's feet. |
@@ -152,7 +161,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.2.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.3.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings

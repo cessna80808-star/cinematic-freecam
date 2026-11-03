@@ -21,6 +21,8 @@ public final class CinecamConfig {
 
     /** Active shot. Dynamic adapts to what the player is doing. */
     public Shot shot = Shot.DYNAMIC;
+    /** Adaptive mining/combat framing for the Dynamic shot. */
+    public boolean dynamic = true;
     /** Base playback speed multiplier. */
     public double speed = 1.0;
     /** Base orbit radius in blocks. */
@@ -106,6 +108,7 @@ public final class CinecamConfig {
 
     public void copyFrom(CinecamConfig other) {
         this.shot = other.shot;
+        this.dynamic = other.dynamic;
         this.speed = other.speed;
         this.radius = other.radius;
         this.height = other.height;

@@ -32,6 +32,7 @@ public final class CineCamera {
     private boolean enabled;
     private boolean engaged;
     private boolean frozen;
+    private boolean dynamicEnabled;
     private boolean directorEnabled;
     private double directorTimer;
     private double cutFade;
@@ -54,6 +55,7 @@ public final class CineCamera {
 
     public CineCamera(CinecamConfig config) {
         this.config = config;
+        this.dynamicEnabled = config.dynamic;
         this.directorEnabled = config.director;
     }
 
@@ -80,6 +82,10 @@ public final class CineCamera {
 
     public boolean isDirectorEnabled() {
         return directorEnabled;
+    }
+
+    public boolean isDynamicEnabled() {
+        return dynamicEnabled;
     }
 
     public double cutFade() {
@@ -193,6 +199,20 @@ public final class CineCamera {
         showToast(directorEnabled ? "Director on" : "Director off");
     }
 
+    public void toggleDynamic() {
+        setDynamic(!dynamicEnabled);
+    }
+
+    public void setDynamic(boolean value) {
+        if (dynamicEnabled == value) {
+            return;
+        }
+        dynamicEnabled = value;
+        config.dynamic = value;
+        config.save(LOGGER);
+        showToast(value ? "Dynamic on" : "Classic mode");
+    }
+
     public void showToast(String text) {
         this.toast = text;
         this.toastUntil = System.currentTimeMillis() + TOAST_MILLIS;
@@ -302,7 +322,7 @@ public final class CineCamera {
      */
     private void updateDynamic(double delta) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.player != null) {
+        if (minecraft.player != null && dynamicEnabled) {
             boolean attacking = minecraft.player.swinging || minecraft.player.swingTime > 0;
             boolean combat = minecraft.player.hurtTime > 0
                 || (attacking && minecraft.crosshairPickEntity != null);
@@ -314,6 +334,11 @@ public final class CineCamera {
             } else if (mining) {
                 miningTimer = 1.2;
             }
+        }
+
+        if (!dynamicEnabled) {
+            miningTimer = 0.0;
+            combatTimer = 0.0;
         }
 
         miningTimer = Math.max(0.0, miningTimer - delta);
@@ -356,8 +381,8 @@ public final class CineCamera {
         switch (config.shot) {
             case DYNAMIC -> {
                 theta = t * 0.16;
-                double movement = cameraEntity.getDeltaMovement().horizontalDistance();
-                radius = config.radius + Math.min(2.5, movement * 8.0);
+                double movement = dynamicEnabled ? cameraEntity.getDeltaMovement().horizontalDistance() : 0.0;
+                radius = config.radius + (dynamicEnabled ? Math.min(2.5, movement * 8.0) : 0.0);
                 height = config.height + 0.5 * Math.sin(t * 0.33);
                 roll = config.roll * 0.25 * Math.sin(t * 0.21);
             }

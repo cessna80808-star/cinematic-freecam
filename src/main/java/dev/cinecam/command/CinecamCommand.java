@@ -22,7 +22,7 @@ public final class CinecamCommand {
             dispatcher.register(ClientCommands.literal("cinecam")
                 .executes(context -> {
                     context.getSource().sendFeedback(Component.literal(
-                        "Cinecam: /cinecam on|off|toggle|shot <name>|next|freeze|director|speed|reload"
+                        "Cinecam: /cinecam on|off|toggle|shot <name>|next|freeze|director|dynamic|speed|reload"
                     ));
                     return 1;
                 })
@@ -83,6 +83,24 @@ public final class CinecamCommand {
                     ));
                     return 1;
                 }))
+                .then(ClientCommands.literal("dynamic")
+                    .executes(context -> {
+                        camera().toggleDynamic();
+                        context.getSource().sendFeedback(Component.literal(
+                            "Dynamic camera " + (camera().isDynamicEnabled() ? "on" : "off (classic)")
+                        ));
+                        return 1;
+                    })
+                    .then(ClientCommands.literal("on").executes(context -> {
+                        camera().setDynamic(true);
+                        context.getSource().sendFeedback(Component.literal("Dynamic camera on"));
+                        return 1;
+                    }))
+                    .then(ClientCommands.literal("off").executes(context -> {
+                        camera().setDynamic(false);
+                        context.getSource().sendFeedback(Component.literal("Dynamic camera off (classic)"));
+                        return 1;
+                    })))
                 .then(ClientCommands.literal("speed").executes(context -> {
                     camera().cycleSpeed();
                     context.getSource().sendFeedback(Component.literal(

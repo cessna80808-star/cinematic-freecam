@@ -4,5 +4,6 @@
 	"key.cinecam.shot": "Cycle camera shot",
 	"key.cinecam.speed": "Cycle camera speed",
 	"key.cinecam.freeze": "Freeze cinematic camera",
-	"key.cinecam.director": "Toggle auto-director"
+	"key.cinecam.director": "Toggle auto-director",
+	"key.cinecam.dynamic": "Toggle dynamic / classic camera"
 }
