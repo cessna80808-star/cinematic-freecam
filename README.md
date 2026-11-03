@@ -99,10 +99,24 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.5.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.6.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
+
+## Studio
+
+Run `/freecam` (or `/cinecam gui`) to open the **Cinecam Studio**. The left side
+shows all ten shots as animated top-down path previews: each card traces the
+shape of the move and marks the current camera position. Click any card to make
+it the active shot; the gold border marks the selected one. The previews are 2D
+path diagrams, not live 3D renders, so the screen stays lightweight.
+
+The right side is a live control panel for camera on/off, adaptive/classic
+framing, playback speed, FOV, orbit distance, height, aim height, wall
+clearance, intro time, handheld shake, full-frame/letterbox, HUD visibility,
+director mode and wall avoidance. Changes apply immediately and are saved to
+`config/cinecam.json`; the game keeps running behind the studio.
 
 ## Controls
 
@@ -125,10 +139,13 @@ The current shot name appears briefly in the corner whenever it changes.
 
 ## Commands
 
-`/cinecam` commands are client-side only and work in singleplayer and on servers:
+`/freecam` and `/cinecam` commands are client-side only and work in singleplayer
+and on servers:
 
 ```
+/freecam            open the Cinecam Studio
 /cinecam            show help
+/cinecam gui        open the Cinecam Studio
 /cinecam on         engage the camera
 /cinecam off        release the camera
 /cinecam toggle     toggle it
@@ -180,7 +197,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.5.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.6.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
@@ -228,6 +245,9 @@ without editing the file:
   `GuiGraphicsExtractor`.
 - The camera is forced into third person while engaged so the player model is
   visible; your original perspective is restored when the shot ends.
+- `CinecamScreen` is the `/freecam` studio: animated top-down shot cards on the
+  left and live controls on the right, all writing through the same config the
+  camera reads.
 
 ## Limitations
 

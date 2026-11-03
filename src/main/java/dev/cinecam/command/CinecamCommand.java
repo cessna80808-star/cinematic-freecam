@@ -4,6 +4,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import dev.cinecam.CinecamClient;
 import dev.cinecam.Shot;
 import dev.cinecam.camera.CineCamera;
+import dev.cinecam.gui.CinecamScreen;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.minecraft.network.chat.Component;
@@ -11,21 +12,31 @@ import net.minecraft.network.chat.Component;
 import java.util.Locale;
 
 /**
- * Client-side {@code /cinecam} command for driving shots without the keybinds.
+ * Client-side {@code /freecam} and {@code /cinecam} commands for opening the
+ * studio and driving shots without the keybinds.
  */
 public final class CinecamCommand {
     private CinecamCommand() {
     }
 
     public static void register() {
-        ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) ->
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, buildContext) -> {
+            dispatcher.register(ClientCommands.literal("freecam").executes(context -> {
+                CinecamScreen.open();
+                return 1;
+            }));
+
             dispatcher.register(ClientCommands.literal("cinecam")
                 .executes(context -> {
                     context.getSource().sendFeedback(Component.literal(
-                        "Cinecam: /cinecam on|off|toggle|shot <name>|next|freeze|director|dynamic|letterbox|speed|reload"
+                        "Cinecam: /freecam opens the studio; /cinecam on|off|toggle|gui|shot <name>|next|freeze|director|dynamic|letterbox|speed|reload"
                     ));
                     return 1;
                 })
+                .then(ClientCommands.literal("gui").executes(context -> {
+                    CinecamScreen.open();
+                    return 1;
+                }))
                 .then(ClientCommands.literal("on").executes(context -> {
                     camera().setEnabled(true);
                     context.getSource().sendFeedback(Component.literal(
@@ -120,8 +131,8 @@ public final class CinecamCommand {
                     context.getSource().sendFeedback(Component.literal("Cinecam config reloaded"));
                     return 1;
                 }))
-            )
-        );
+            );
+        });
     }
 
     private static CineCamera camera() {

@@ -119,6 +119,7 @@ public final class CinecamClient implements ClientModInitializer {
     public void reloadConfig() {
         CinecamConfig loaded = CinecamConfig.load(LOGGER);
         config.copyFrom(loaded);
+        camera.reloadFromConfig();
         camera.showToast("Config reloaded");
     }
 

@@ -243,6 +243,18 @@ public final class CineCamera {
         showToast(shot.displayName());
     }
 
+    /**
+     * Re-applies the mode flags after the JSON config has been reloaded. The
+     * config fields alone are not enough: the camera keeps its own toggles so
+     * keybind changes and reloads cannot silently disagree.
+     */
+    public void reloadFromConfig() {
+        this.dynamicEnabled = config.dynamic;
+        this.directorEnabled = config.director;
+        this.directorTimer = 0.0;
+        resetRig();
+    }
+
     public void cycleSpeed() {
         speedIndex = (speedIndex + 1) % SPEED_STEPS.length;
         showToast("Speed " + SPEED_LABELS[speedIndex]);
