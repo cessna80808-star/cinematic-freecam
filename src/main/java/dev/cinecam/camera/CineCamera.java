@@ -29,6 +29,13 @@ public final class CineCamera {
     private static final long TOAST_MILLIS = 2600L;
     private static final double CUT_SECONDS = 0.35;
     private static final double MAX_COMBAT_DISTANCE = 18.0;
+    private static final double SETTLE_SECONDS = 0.18;
+    private static final double RIG_SEARCH_INTERVAL = 0.22;
+    private static final double[] RIG_ANGLE_OFFSETS = {
+        0.0, 0.35, -0.35, 0.70, -0.70, 1.05, -1.05, 1.40, -1.40, Math.PI
+    };
+    private static final double[] RIG_HEIGHT_OFFSETS = {0.0, 0.9, -0.9, 1.8, -1.8, 2.6};
+    private static final double[] RIG_DISTANCE_FACTORS = {1.0, 0.82, 0.64, 0.50};
 
     private final CinecamConfig config;
 
@@ -46,6 +53,11 @@ public final class CineCamera {
     private Vec3 anchor;
     private Vec3 staticAnchor;
     private CameraType savedCameraType;
+    private boolean savedFirstPerson;
+    private boolean perspectiveRestored;
+    private boolean justRestoredPerspective;
+    private double settleTimer;
+    private CameraPose handoffPose;
     private int speedIndex = 2;
     private String toast = "";
     private long toastUntil;
@@ -54,7 +66,16 @@ public final class CineCamera {
     private double combatTimer;
     private double miningWeight;
     private double combatWeight;
-    private double collisionDistance = -1.0;
+
+    private double rigAngle;
+    private double rigHorizontal;
+    private double rigVertical;
+    private boolean rigReady;
+    private double rigAngleOffset;
+    private double rigHeightOffset;
+    private double rigDistanceFactor = 1.0;
+    private double rigSearchTimer;
+    private double rigClearance = 1.0;
 
     // Dynamic framing state. Keeping these out of pose() lets the adaptive
     // camera react at tick rate while the render pose stays smooth.
@@ -130,6 +151,15 @@ public final class CineCamera {
         }
         boolean fresh = !this.engaged;
         this.enabled = value;
+        if (value && !fresh && perspectiveRestored) {
+            Minecraft minecraft = Minecraft.getInstance();
+            this.savedCameraType = minecraft.options.getCameraType();
+            this.savedFirstPerson = savedCameraType == CameraType.FIRST_PERSON;
+            this.perspectiveRestored = false;
+            this.settleTimer = 0.0;
+            this.handoffPose = null;
+            resetRig();
+        }
         if (value && fresh) {
             this.engaged = true;
             this.blend = 0.0;
@@ -142,7 +172,6 @@ public final class CineCamera {
             this.combatTimer = 0.0;
             this.miningWeight = 0.0;
             this.combatWeight = 0.0;
-            this.collisionDistance = -1.0;
             this.smoothedSpeed = 0.0;
             this.smoothedVelocity = new Vec3(0.0, 0.0, 0.0);
             this.dynamicFov = 0.0;
@@ -150,10 +179,21 @@ public final class CineCamera {
             this.retargetTimer = 0.0;
             this.combatPosition = null;
             this.combatFocus = null;
+            this.perspectiveRestored = false;
+            this.justRestoredPerspective = false;
+            this.settleTimer = 0.0;
+            this.handoffPose = null;
+            resetRig();
             Minecraft minecraft = Minecraft.getInstance();
             this.framingYaw = minecraft.player == null ? 0.0 : minecraft.player.getViewYRot(1.0F);
             this.savedCameraType = minecraft.options.getCameraType();
+            this.savedFirstPerson = savedCameraType == CameraType.FIRST_PERSON;
             minecraft.options.setCameraType(CameraType.THIRD_PERSON_BACK);
+        } else if (!value) {
+            this.perspectiveRestored = false;
+            this.justRestoredPerspective = false;
+            this.settleTimer = 0.0;
+            this.handoffPose = null;
         }
         showToast(value ? config.shot.displayName() : "Off");
     }
@@ -174,7 +214,7 @@ public final class CineCamera {
         if (!engaged) {
             return;
         }
-        if (minecraft.options.getCameraType() == CameraType.FIRST_PERSON) {
+        if (minecraft.options.getCameraType() == CameraType.FIRST_PERSON && !perspectiveRestored) {
             minecraft.options.setCameraType(CameraType.THIRD_PERSON_BACK);
         }
     }
@@ -198,7 +238,7 @@ public final class CineCamera {
         config.shot = shot;
         config.save(LOGGER);
         directorTimer = 0.0;
-        collisionDistance = -1.0;
+        resetRig();
         cutFade = config.cutDip ? 1.0 : 0.0;
         showToast(shot.displayName());
     }
@@ -243,6 +283,12 @@ public final class CineCamera {
         showToast(value ? "Dynamic on" : "Classic mode");
     }
 
+    public void toggleLetterbox() {
+        config.letterbox = !config.letterbox;
+        config.save(LOGGER);
+        showToast(config.letterbox ? "Letterbox on" : "Full frame");
+    }
+
     public void showToast(String text) {
         this.toast = text;
         this.toastUntil = System.currentTimeMillis() + TOAST_MILLIS;
@@ -282,7 +328,27 @@ public final class CineCamera {
      * than at the vanilla third-person offset.
      */
     public boolean returnsToFirstPerson() {
-        return savedCameraType == CameraType.FIRST_PERSON;
+        return savedFirstPerson;
+    }
+
+    public boolean isPerspectiveRestored() {
+        return perspectiveRestored;
+    }
+
+    public boolean justRestoredPerspective() {
+        return justRestoredPerspective;
+    }
+
+    public double settleProgress() {
+        return settleTimer <= 0.0 ? 1.0 : 1.0 - settleTimer / SETTLE_SECONDS;
+    }
+
+    public void captureHandoff(CameraPose pose) {
+        this.handoffPose = pose;
+    }
+
+    public CameraPose handoffPose() {
+        return handoffPose;
     }
 
     /**
@@ -315,6 +381,7 @@ public final class CineCamera {
             delta = 0.0;
         }
         frameDelta = delta;
+        justRestoredPerspective = false;
 
         if (enabled && !frozen) {
             phase += delta * speedFactor();
@@ -343,8 +410,18 @@ public final class CineCamera {
         }
 
         if (!enabled && engaged && blend <= 0.0) {
-            engaged = false;
-            restoreCameraType();
+            if (!perspectiveRestored) {
+                restoreCameraType();
+                perspectiveRestored = true;
+                justRestoredPerspective = true;
+                settleTimer = SETTLE_SECONDS;
+            }
+            if (settleTimer > 0.0) {
+                settleTimer = Math.max(0.0, settleTimer - delta);
+            }
+            if (settleTimer <= 0.0) {
+                engaged = false;
+            }
         }
     }
 
@@ -567,25 +644,25 @@ public final class CineCamera {
         Vec3 focus = baseFocus.add(0.0, 0.35, 0.0);
 
         if (dynamicEnabled && config.follow) {
-            Vec3 lead = smoothedVelocity.scale(0.05);
+            double speed = speedEase();
+            Vec3 lead = smoothedVelocity.scale(0.05 + 0.025 * speed);
             double leadLength = lead.length();
-            if (leadLength > 1.0) {
-                lead = lead.scale(1.0 / leadLength);
+            if (leadLength > 1.6) {
+                lead = lead.scale(1.6 / leadLength);
             }
             focus = focus.add(lead);
 
             // At SkyBlock speeds an orbit swings the lens into walls and lets
             // the player slide around the frame. As speed builds, settle into
             // a stable chase view behind the look direction instead.
-            double speed = speedEase();
             if (speed > 0.001) {
                 Vec3 forward = forwardFromYaw(framingYaw);
                 Vec3 side = rightFromForward(forward);
-                Vec3 chasePosition = anchor.add(0.0, 2.55 + 0.25 * speed, 0.0)
-                    .subtract(forward.scale(5.2 + 1.9 * speed))
+                Vec3 chasePosition = anchor.add(0.0, 2.55 + 0.35 * speed, 0.0)
+                    .subtract(forward.scale(5.2 + 2.2 * speed))
                     .add(side.scale(0.45));
                 Vec3 chaseFocus = anchor.add(0.0, 1.45, 0.0)
-                    .add(forward.scale(0.8 + 0.5 * speed));
+                    .add(forward.scale(0.95 + 1.0 * speed));
                 position = position.lerp(chasePosition, speed);
                 focus = focus.lerp(chaseFocus, speed);
             }
@@ -756,54 +833,182 @@ public final class CineCamera {
     }
 
     /**
-     * Clips the camera ray against block collision and keeps a margin from the
-     * surface. Snaps in immediately when something blocks the view, eases back
-     * out when it is clear, and nudges the camera out of any block it still
-     * overlaps.
+     * Smooths the camera around the focus and looks for an open angle instead of
+     * snapping straight into the player when a wall appears. Full distance is
+     * preferred; shorter distances are only used when no open angle exists.
      */
     private Vec3 resolveGeometry(Entity entity, Vec3 focus, Vec3 desired) {
         Minecraft minecraft = Minecraft.getInstance();
         if (!config.avoidGeometry || minecraft.level == null) {
-            collisionDistance = -1.0;
+            rigReady = false;
             return desired;
         }
 
-        Vec3 ray = desired.subtract(focus);
+        Vec3 offset = desired.subtract(focus);
+        double baseHorizontal = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
+        if (baseHorizontal < 1.0E-4) {
+            Vec3 result = desired;
+            for (int i = 0; i < 6 && nearSolid(minecraft, result); i++) {
+                result = result.lerp(focus, 0.2);
+            }
+            return result;
+        }
+
+        double baseAngle = Math.atan2(offset.z, offset.x);
+        double baseVertical = offset.y;
+        rigSearchTimer -= frameDelta;
+
+        Candidate current = new Candidate(
+            baseAngle + rigAngleOffset,
+            baseHorizontal * rigDistanceFactor,
+            baseVertical + rigHeightOffset
+        );
+        Vec3 currentPosition = candidatePosition(focus, current);
+        if (!rigReady || rigSearchTimer <= 0.0 || !isClear(entity, focus, currentPosition)) {
+            Candidate chosen = chooseCandidate(entity, focus, baseAngle, baseHorizontal, baseVertical);
+            rigAngleOffset = Math.toRadians(Mth.wrapDegrees(Math.toDegrees(chosen.angle - baseAngle)));
+            rigDistanceFactor = baseHorizontal < 1.0E-4 ? 1.0 : chosen.horizontal / baseHorizontal;
+            rigHeightOffset = chosen.vertical - baseVertical;
+            rigSearchTimer = RIG_SEARCH_INTERVAL;
+        }
+
+        double targetAngle = baseAngle + rigAngleOffset;
+        double targetHorizontal = baseHorizontal * rigDistanceFactor;
+        double targetVertical = baseVertical + rigHeightOffset;
+        if (!rigReady) {
+            rigAngle = targetAngle;
+            rigHorizontal = targetHorizontal;
+            rigVertical = targetVertical;
+            rigReady = true;
+        } else {
+            double angleStep = Math.toRadians(Mth.wrapDegrees(Math.toDegrees(targetAngle - rigAngle)));
+            rigAngle += angleStep * (1.0 - Math.exp(-frameDelta * 7.0));
+            double horizontalRate = targetHorizontal < rigHorizontal ? 8.0 : 3.2;
+            rigHorizontal += (targetHorizontal - rigHorizontal) * (1.0 - Math.exp(-frameDelta * horizontalRate));
+            rigVertical += (targetVertical - rigVertical) * (1.0 - Math.exp(-frameDelta * 5.0));
+        }
+
+        Vec3 result = focus.add(new Vec3(
+            Math.cos(rigAngle) * rigHorizontal,
+            rigVertical,
+            Math.sin(rigAngle) * rigHorizontal
+        ));
+
+        Vec3 ray = result.subtract(focus);
         double rayLength = ray.length();
-        if (rayLength < 1.0E-4) {
-            return desired;
+        if (rayLength > 1.0E-4) {
+            HitResult hit = minecraft.level.clip(new ClipContext(
+                focus,
+                result,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE,
+                entity
+            ));
+            double targetClearance = 1.0;
+            if (hit.getType() != HitResult.Type.MISS) {
+                double safeDistance = Math.max(0.8, hit.getLocation().distanceTo(focus) - config.cameraMargin);
+                targetClearance = Mth.clamp(safeDistance / rayLength, 0.12, 1.0);
+            }
+            if (targetClearance < rigClearance) {
+                rigClearance = Math.max(targetClearance, rigClearance - frameDelta * 9.0);
+            } else {
+                rigClearance = Math.min(1.0, rigClearance + frameDelta * 2.5);
+            }
+            if (rigClearance < 1.0) {
+                result = focus.add(ray.scale(rigClearance));
+            }
         }
-        Vec3 direction = ray.scale(1.0 / rayLength);
-        Vec3 result = desired;
+        return result;
+    }
 
+    private Candidate chooseCandidate(Entity entity, Vec3 focus, double baseAngle, double baseHorizontal, double baseVertical) {
+        boolean fast = dynamicEnabled && speedEase() > 0.45;
+        boolean contextual = config.shot == Shot.DYNAMIC && (miningWeight > 0.15 || combatWeight > 0.15);
+        double maxAngle = fast || contextual ? 1.05 : Math.PI;
+
+        for (double factor : RIG_DISTANCE_FACTORS) {
+            Candidate best = null;
+            double bestScore = Double.MAX_VALUE;
+            for (double angleOffset : RIG_ANGLE_OFFSETS) {
+                if (Math.abs(angleOffset) > maxAngle + 1.0E-6) {
+                    continue;
+                }
+                for (double heightOffset : RIG_HEIGHT_OFFSETS) {
+                    Candidate candidate = new Candidate(
+                        baseAngle + angleOffset,
+                        baseHorizontal * factor,
+                        baseVertical + heightOffset
+                    );
+                    Vec3 position = candidatePosition(focus, candidate);
+                    if (!isClear(entity, focus, position)) {
+                        continue;
+                    }
+                    double score = Math.abs(angleOffset) * 1.8
+                        + Math.abs(heightOffset) * 0.65
+                        + (1.0 - factor) * 3.0;
+                    if (rigReady && candidate.closeTo(
+                        baseAngle + rigAngleOffset,
+                        baseHorizontal * rigDistanceFactor,
+                        baseVertical + rigHeightOffset
+                    )) {
+                        score -= 0.35;
+                    }
+                    if (heightOffset > 0.0) {
+                        score -= 0.05;
+                    }
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = candidate;
+                    }
+                }
+            }
+            if (best != null) {
+                return best;
+            }
+        }
+
+        return new Candidate(baseAngle, Math.min(1.2, baseHorizontal), 0.6);
+    }
+
+    private Vec3 candidatePosition(Vec3 focus, Candidate candidate) {
+        return focus.add(new Vec3(
+            Math.cos(candidate.angle) * candidate.horizontal,
+            candidate.vertical,
+            Math.sin(candidate.angle) * candidate.horizontal
+        ));
+    }
+
+    private boolean isClear(Entity entity, Vec3 focus, Vec3 candidate) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null) {
+            return true;
+        }
+        if (nearSolid(minecraft, candidate)) {
+            return false;
+        }
+        Vec3 ray = candidate.subtract(focus);
+        double length = ray.length();
+        if (length < 1.0E-4) {
+            return true;
+        }
         HitResult hit = minecraft.level.clip(new ClipContext(
             focus,
-            desired,
+            candidate,
             ClipContext.Block.COLLIDER,
             ClipContext.Fluid.NONE,
             entity
         ));
-        if (hit.getType() != HitResult.Type.MISS) {
-            double hitDistance = hit.getLocation().distanceTo(focus);
-            double safeDistance = Math.max(0.6, hitDistance - config.cameraMargin);
-            result = focus.add(direction.scale(Math.min(safeDistance, rayLength)));
-        }
+        return hit.getType() == HitResult.Type.MISS
+            || hit.getLocation().distanceToSqr(focus) >= length * length - 0.01;
+    }
 
-        for (int i = 0; i < 8 && nearSolid(minecraft, result); i++) {
-            result = result.add(direction.scale(-0.35));
-        }
-
-        Vec3 offset = result.subtract(focus);
-        double distance = offset.length();
-        if (distance < 1.0E-4) {
-            return result;
-        }
-        if (collisionDistance < 0.0 || distance < collisionDistance) {
-            collisionDistance = distance;
-        } else {
-            collisionDistance += (distance - collisionDistance) * (1.0 - Math.exp(-frameDelta * 6.0));
-        }
-        return focus.add(offset.normalize().scale(collisionDistance));
+    private void resetRig() {
+        rigReady = false;
+        rigAngleOffset = 0.0;
+        rigHeightOffset = 0.0;
+        rigDistanceFactor = 1.0;
+        rigSearchTimer = 0.0;
+        rigClearance = 1.0;
     }
 
     private boolean nearSolid(Minecraft minecraft, Vec3 pos) {
@@ -828,5 +1033,13 @@ public final class CineCamera {
     }
 
     private record Framing(Vec3 position, Vec3 focus) {
+    }
+
+    private record Candidate(double angle, double horizontal, double vertical) {
+        private boolean closeTo(double angle, double horizontal, double vertical) {
+            return Math.abs(Mth.wrapDegrees(Math.toDegrees(this.angle - angle))) < 10.0
+                && Math.abs(this.horizontal - horizontal) < 0.35
+                && Math.abs(this.vertical - vertical) < 0.35;
+        }
     }
 }

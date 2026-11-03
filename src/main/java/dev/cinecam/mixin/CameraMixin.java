@@ -86,11 +86,26 @@ public abstract class CameraMixin {
             progress = eased;
         } else {
             // Fall from the shot back to the player's eyes, or to the vanilla
-            // third-person camera when that is where we came from.
+            // camera when that is where we came from. After the perspective is
+            // restored, blend into the actual vanilla pose during a short
+            // settle so the final handoff cannot snap.
             from = shot;
-            to = camera.returnsToFirstPerson()
-                ? camera.eyePose(entity, partialTicks)
-                : new CameraPose(this.position, this.yRot, this.xRot, 0.0F);
+            CameraPose vanilla = new CameraPose(this.position, this.yRot, this.xRot, 0.0F);
+            if (camera.isPerspectiveRestored()) {
+                if (camera.justRestoredPerspective() || camera.handoffPose() == null) {
+                    CameraPose start = camera.returnsToFirstPerson()
+                        ? camera.eyePose(entity, partialTicks)
+                        : vanilla;
+                    camera.captureHandoff(start);
+                    to = start;
+                } else {
+                    to = cinecam$lerpPose(camera.handoffPose(), vanilla, camera.settleProgress());
+                }
+            } else {
+                to = camera.returnsToFirstPerson()
+                    ? camera.eyePose(entity, partialTicks)
+                    : vanilla;
+            }
             progress = 1.0 - eased;
         }
 
@@ -123,6 +138,16 @@ public abstract class CameraMixin {
         float target = Mth.clamp((float) client.config().fov + camera.fovOffset(), 20.0F, 120.0F);
         float base = cir.getReturnValue();
         cir.setReturnValue(Mth.lerp((float) blend, base, target));
+    }
+
+    private static CameraPose cinecam$lerpPose(CameraPose from, CameraPose to, double progress) {
+        float t = (float) progress;
+        return new CameraPose(
+            from.pos().lerp(to.pos(), progress),
+            from.yaw() + Mth.wrapDegrees(to.yaw() - from.yaw()) * t,
+            Mth.lerp(t, from.pitch(), to.pitch()),
+            Mth.lerp(t, from.roll(), to.roll())
+        );
     }
 
     private static Quaternionf cinecam$quat(CameraPose pose) {

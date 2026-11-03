@@ -46,8 +46,9 @@ framings:
 
 The sub-framings cross-fade with smoothed weights, so a fight starting mid-mine
 does not snap. At speed the follow anchor is capped to roughly 0.35 blocks of
-lag and the lens opens by up to 3°, which keeps the player centered when moving
-at several times vanilla sprint speed.
+lag, the look target leads the player by up to two blocks, and the lens opens
+by up to 3°, which keeps the player composed when moving at several times
+vanilla sprint speed.
 
 Press `F4` or run `/cinecam dynamic` to turn the adaptive framing off. Classic
 mode keeps the gentle Dynamic orbit but ignores mining, combat and movement
@@ -57,20 +58,28 @@ camera.
 
 ## Geometry-aware camera
 
-Every shot is clipped against block collision from the look-at point out to the
-camera. If a wall, ceiling or floor is in the way, the camera snaps to the near
-side of it with a configurable margin, then eases back out when the view clears.
-The camera is also nudged out of any block it still overlaps. This is what keeps
-low orbits out of terrain and combat framing out of walls; disable it with
-`avoidGeometry` if you want a true free camera.
+Instead of snapping straight in when a wall appears, Cinecam treats the camera
+as a short spherical rig. It searches for an open angle and height around the
+focus, keeps full distance whenever possible, and only shortens the boom if no
+open shot exists. The chosen rig is eased into place, so an obstruction changes
+the shot instead of jerking the lens. A clearance pass keeps the camera out of
+blocks; disable `avoidGeometry` for a completely free camera.
 
 ## Smooth emerge and return
 
 Toggling the camera on starts at the player's eyes and pulls out into the shot;
 toggling it off flies back into the player's eyes before first person is
 restored. If you started in third person, the outro returns to that third-person
-camera instead, so changing perspective never snaps. The letterbox bars grow and
-shrink with the same ease, and the FOV blends with it.
+camera instead. After the blend reaches the vanilla pose, Cinecam holds it for a
+short settle and blends the saved perspective in before releasing, so the
+handoff has no snap. The HUD returns during that settle instead of popping.
+
+## Full frame
+
+Letterbox is off by default, so the camera uses the whole window. Run
+`/cinecam letterbox` to toggle 2.39:1 bars. Existing configs are migrated to off
+once; `letterbox` can be set manually, and `letterboxRatio` controls the bar
+shape when it is enabled.
 
 ## Cuts and director mode
 
@@ -90,7 +99,7 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.4.1.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.5.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -129,6 +138,7 @@ The current shot name appears briefly in the corner whenever it changes.
 /cinecam freeze     freeze or resume the shot
 /cinecam director   toggle auto-director
 /cinecam dynamic    toggle adaptive framing (or dynamic on/off)
+/cinecam letterbox  toggle 2.39:1 bars (full frame by default)
 /cinecam speed      cycle speed
 /cinecam reload     re-read config/cinecam.json
 ```
@@ -149,7 +159,7 @@ The current shot name appears briefly in the corner whenever it changes.
 | `followRate` | `4.0` | Minimum tracking rate. High speed automatically tightens this to cap the lag. |
 | `introSeconds` | `1.8` | Emerge / return duration. |
 | `fov` | `55` | Field of view while fully engaged. |
-| `letterbox` | `true` | Draw 2.39:1 cinematic bars. |
+| `letterbox` | `false` | Draw 2.39:1 cinematic bars. Off uses the full frame. |
 | `letterboxRatio` | `2.39` | Aspect ratio for the bars. |
 | `hideHud` | `true` | Hide the hotbar, chat, crosshair, etc. |
 | `roll` | `2.5` | Maximum Dutch-angle roll in degrees. |
@@ -170,7 +180,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.4.1.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.5.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
@@ -208,7 +218,8 @@ without editing the file:
   the outro it interpolates back to the eyes (or to the vanilla third-person
   camera if that is the perspective being restored).
 - `CineCamera#pose` computes each shot, blends the Dynamic base/chase, mining
-  and combat framings, then runs the collision clip and distance smoothing.
+  and combat framings, then runs the open-angle camera rig and clearance
+  smoothing.
 - `CameraMixin` also overrides `Camera#calculateFov` so the custom FOV and the
   Vertigo lens offset reach the projection matrix.
 - `HudMixin` cancels HUD extraction while engaged (setting the vanilla
@@ -220,8 +231,8 @@ without editing the file:
 
 ## Limitations
 
-- Collision uses a single ray from the player to the camera, so very thin gaps
-  can still show a sliver of geometry at the frame edge.
+- The rig checks the camera center and nearby points, but a very thin gap or a
+  corner can still show a sliver of geometry at the frame edge.
 - Interactions still aim from the cinematic camera while engaged; use the freeze
   key for screenshots rather than mining with the cinematic camera running.
 - Flyby's loop is a hard cut (a new shot every 18 seconds) rather than a

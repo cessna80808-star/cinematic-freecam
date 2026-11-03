@@ -3,7 +3,7 @@
 	"id": "cinecam",
 	"version": "${version}",
 	"name": "Cinecam",
-	"description": "Ten cinematic free-camera shots, including a Dynamic camera with enemy-aware combat framing, stable 400%+ movement, and a classic-mode toggle. Client-side only.",
+	"description": "Ten cinematic free-camera shots, including a Dynamic camera with enemy-aware combat framing, open-angle collision avoidance, predictive 400%+ movement, and a full-frame mode. Client-side only.",
 	"authors": [
 		"Cinecam contributors"
 	],

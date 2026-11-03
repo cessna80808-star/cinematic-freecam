@@ -22,7 +22,7 @@ public final class CinecamCommand {
             dispatcher.register(ClientCommands.literal("cinecam")
                 .executes(context -> {
                     context.getSource().sendFeedback(Component.literal(
-                        "Cinecam: /cinecam on|off|toggle|shot <name>|next|freeze|director|dynamic|speed|reload"
+                        "Cinecam: /cinecam on|off|toggle|shot <name>|next|freeze|director|dynamic|letterbox|speed|reload"
                     ));
                     return 1;
                 })
@@ -101,6 +101,13 @@ public final class CinecamCommand {
                         context.getSource().sendFeedback(Component.literal("Dynamic camera off (classic)"));
                         return 1;
                     })))
+                .then(ClientCommands.literal("letterbox").executes(context -> {
+                    camera().toggleLetterbox();
+                    context.getSource().sendFeedback(Component.literal(
+                        "Letterbox " + (camera().config().letterbox ? "on" : "off (full frame)")
+                    ));
+                    return 1;
+                }))
                 .then(ClientCommands.literal("speed").executes(context -> {
                     camera().cycleSpeed();
                     context.getSource().sendFeedback(Component.literal(

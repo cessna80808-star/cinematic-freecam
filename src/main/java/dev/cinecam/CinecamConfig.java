@@ -19,6 +19,8 @@ public final class CinecamConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path PATH = FabricLoader.getInstance().getConfigDir().resolve("cinecam.json");
 
+    /** Config schema version, used for one-time migrations. */
+    public int configVersion = 2;
     /** Active shot. Dynamic adapts to what the player is doing. */
     public Shot shot = Shot.DYNAMIC;
     /** Adaptive mining/combat framing for the Dynamic shot. */
@@ -39,8 +41,8 @@ public final class CinecamConfig {
     public double introSeconds = 1.8;
     /** Field of view used while the shot is fully engaged. */
     public int fov = 55;
-    /** Draw cinematic black bars. */
-    public boolean letterbox = true;
+    /** Draw cinematic black bars. Off by default so the whole frame is used. */
+    public boolean letterbox = false;
     /** Letterbox aspect ratio (2.39 is classic cinemascope). */
     public double letterboxRatio = 2.39;
     /** Hide the vanilla HUD while the shot is engaged. */
@@ -89,6 +91,10 @@ public final class CinecamConfig {
     }
 
     public void normalize() {
+        if (configVersion < 2) {
+            letterbox = false;
+            configVersion = 2;
+        }
         if (shot == null) {
             shot = Shot.DYNAMIC;
         }
@@ -107,6 +113,7 @@ public final class CinecamConfig {
     }
 
     public void copyFrom(CinecamConfig other) {
+        this.configVersion = other.configVersion;
         this.shot = other.shot;
         this.dynamic = other.dynamic;
         this.speed = other.speed;

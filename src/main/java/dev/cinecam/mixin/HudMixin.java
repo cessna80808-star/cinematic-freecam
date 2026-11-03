@@ -24,6 +24,10 @@ public abstract class HudMixin {
         if (camera == null || !camera.isEngaged() || !camera.config().hideHud) {
             return;
         }
+        if (camera.blendEased() <= 0.001) {
+            Minecraft.getInstance().gameRenderer.gameRenderState().guiRenderState.isHudHidden = false;
+            return;
+        }
         Minecraft.getInstance().gameRenderer.gameRenderState().guiRenderState.isHudHidden = true;
         CinecamOverlay.draw(graphics, camera);
         ci.cancel();
