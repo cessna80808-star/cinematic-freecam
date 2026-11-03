@@ -2,7 +2,7 @@
 
 Client-side cinematic cameras for **Minecraft Java 26.2** (the "Chaos Cubed" drop).
 
-Cinecam takes over your local camera and flies it around the player along five
+Cinecam takes over your local camera and flies it around the player along nine
 different previs-style shots — perfect for trailers, screenshots, timelapses and
 machinima. It never touches the server: your movement, hitboxes and gameplay are
 exactly the same, only your view changes.
@@ -16,11 +16,31 @@ exactly the same, only your view changes.
 | **Crane** | A jib-style orbit that starts high, descends and pushes in, then rises again. |
 | **Dolly** | Orbits while slowly pushing in and pulling out, with a gentle Dutch roll. |
 | **Flyby** | A wide low-to-high pass that sweeps past the player and loops (the loop point is a deliberate cut). |
+| **Figure 8** | A lemniscate that loops in front of and behind the player. |
+| **Top Down** | A high overhead orbit that looks straight down on the player. |
+| **Pendulum** | A slow arc that swings past the player and back the other way. |
+| **Vertigo** | A dolly-zoom orbit: the camera pushes in while the lens widens. |
 
 Every shot eases in and out over `introSeconds` instead of snapping, looks at the
 player, and follows them with a small exponential lag so walking doesn't jitter
 the frame. Handheld micro-shake is on by default; set `shake` to `0` for a
 locked-off camera.
+
+## Smooth emerge and return
+
+Toggling the camera on starts at the player's eyes and pulls out into the shot;
+toggling it off flies back into the player's eyes before first person is
+restored. If you started in third person, the outro returns to that third-person
+camera instead, so changing perspective never snaps. The letterbox bars grow and
+shrink with the same ease, and the FOV blends with it.
+
+## Cuts and director mode
+
+Changing shots dips through black over a third of a second for a clean cut
+(`cutDip`). Director mode automatically moves to the next shot every
+`directorSeconds`, using the same dip, so you can leave it running for a
+hands-free montage. Press `F9` to freeze a shot on a frame and `F10` to toggle
+director mode.
 
 ## Requirements
 
@@ -32,7 +52,7 @@ locked-off camera.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.0.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.1.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -44,8 +64,10 @@ locked-off camera.
 | `F6` | Toggle the cinematic camera |
 | `F7` | Cycle to the next shot |
 | `F8` | Cycle speed (0.5x, 0.75x, 1x, 1.5x, 2x) |
+| `F9` | Freeze / resume the shot |
+| `F10` | Toggle auto-director |
 
-All three can be rebound in **Options → Controls → Cinecam**.
+All five can be rebound in **Options → Controls → Cinecam**.
 
 The current shot name appears briefly in the corner whenever it changes.
 
@@ -58,7 +80,11 @@ The current shot name appears briefly in the corner whenever it changes.
 /cinecam on         engage the camera
 /cinecam off        release the camera
 /cinecam toggle     toggle it
-/cinecam shot orbit play a specific shot (orbit, spiral, crane, dolly, flyby)
+/cinecam shot orbit play a specific shot (orbit, spiral, crane, dolly, flyby,
+                    figure8, topdown, pendulum, vertigo)
+/cinecam next       jump to the next shot
+/cinecam freeze     freeze or resume the shot
+/cinecam director   toggle auto-director
 /cinecam speed      cycle speed
 /cinecam reload     re-read config/cinecam.json
 ```
@@ -76,13 +102,16 @@ The current shot name appears briefly in the corner whenever it changes.
 | `targetHeight` | `1.2` | Height of the point the camera aims at. |
 | `follow` | `true` | Follow the player. `false` anchors the shot where it started. |
 | `followRate` | `4.0` | How tightly the camera tracks a moving player. |
-| `introSeconds` | `1.5` | Ease-in / ease-out duration. |
+| `introSeconds` | `1.8` | Emerge / return duration. |
 | `fov` | `55` | Field of view while fully engaged. |
 | `letterbox` | `true` | Draw 2.39:1 cinematic bars. |
 | `letterboxRatio` | `2.39` | Aspect ratio for the bars. |
 | `hideHud` | `true` | Hide the hotbar, chat, crosshair, etc. |
 | `roll` | `2.5` | Maximum Dutch-angle roll in degrees. |
 | `shake` | `0.02` | Handheld micro-shake in blocks (`0` disables). |
+| `cutDip` | `true` | Dip through black when the shot changes. |
+| `directorSeconds` | `20.0` | Seconds between automatic shot changes (`0` disables). |
+| `director` | `false` | Whether auto-director is enabled. |
 
 Edit the file and run `/cinecam reload`, or restart the game.
 
@@ -94,7 +123,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.0.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.1.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
@@ -114,7 +143,7 @@ loom_version=1.19-SNAPSHOT
 java_version=25
 ```
 
-Then run `./gradlew build` and re-check the two mixin targets (`Camera#update`,
+Then run `./gradlew build` and re-check the mixin targets (`Camera#update`,
 `Camera#calculateFov`, `Hud#extractRenderState`) if Minecraft changes the camera
 or HUD pipeline again. You can also override the versions from the command line
 without editing the file:
@@ -126,13 +155,16 @@ without editing the file:
 ## How it works
 
 - `CameraMixin` runs at the tail of `Camera#update`, after vanilla has placed the
-  third-person camera, and overwrites the position, yaw, pitch and roll before
-  the camera render state is extracted.
-- `CameraMixin` also overrides `Camera#calculateFov` so the custom FOV reaches the
-  projection matrix.
+  camera, and replaces the position, yaw, pitch and roll before the camera render
+  state is extracted.
+- During the intro it interpolates from the player's eye pose to the shot; during
+  the outro it interpolates back to the eyes (or to the vanilla third-person
+  camera if that is the perspective being restored).
+- `CameraMixin` also overrides `Camera#calculateFov` so the custom FOV and the
+  Vertigo lens offset reach the projection matrix.
 - `HudMixin` cancels HUD extraction while engaged (setting the vanilla
   `guiRenderState.isHudHidden` flag too, which also hides the hand and 3D
-  crosshair) and submits the letterbox bars through the new 26.2
+  crosshair) and submits the animated bars and dip-to-black through the new 26.2
   `GuiGraphicsExtractor`.
 - The camera is forced into third person while engaged so the player model is
   visible; your original perspective is restored when the shot ends.

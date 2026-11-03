@@ -3,7 +3,7 @@
 	"id": "cinecam",
 	"version": "${version}",
 	"name": "Cinecam",
-	"description": "Cinematic free-cameras that orbit, spiral, crane, dolly and fly past the player. Client-side only.",
+	"description": "Nine cinematic free-camera shots that orbit, spiral, crane, dolly, swing and fly around the player. Client-side only.",
 	"authors": [
 		"Cinecam contributors"
 	],

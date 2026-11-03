@@ -2,5 +2,7 @@
 	"key.category.cinecam.cinecam": "Cinecam",
 	"key.cinecam.toggle": "Toggle cinematic camera",
 	"key.cinecam.shot": "Cycle camera shot",
-	"key.cinecam.speed": "Cycle camera speed"
+	"key.cinecam.speed": "Cycle camera speed",
+	"key.cinecam.freeze": "Freeze cinematic camera",
+	"key.cinecam.director": "Toggle auto-director"
 }

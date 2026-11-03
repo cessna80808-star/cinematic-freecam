@@ -33,8 +33,8 @@ public final class CinecamConfig {
     public boolean follow = true;
     /** How quickly the camera catches up to a moving player (higher is tighter). */
     public double followRate = 4.0;
-    /** Seconds spent easing in and out of the shot. */
-    public double introSeconds = 1.5;
+    /** Seconds spent easing out of, and back into, the player. */
+    public double introSeconds = 1.8;
     /** Field of view used while the shot is fully engaged. */
     public int fov = 55;
     /** Draw cinematic black bars. */
@@ -47,6 +47,12 @@ public final class CinecamConfig {
     public double roll = 2.5;
     /** Handheld micro-shake in blocks. Set to 0 for a locked-off camera. */
     public double shake = 0.02;
+    /** Dip through black when the shot changes, so cuts land cleanly. */
+    public boolean cutDip = true;
+    /** Seconds between automatic shot changes in director mode (0 disables it). */
+    public double directorSeconds = 20.0;
+    /** Whether director mode is enabled. */
+    public boolean director = false;
 
     public static CinecamConfig load(Logger logger) {
         CinecamConfig config = new CinecamConfig();
@@ -90,6 +96,7 @@ public final class CinecamConfig {
         letterboxRatio = Mth.clamp(letterboxRatio, 1.0, 4.0);
         roll = Mth.clamp(roll, -30.0, 30.0);
         shake = Mth.clamp(shake, 0.0, 0.5);
+        directorSeconds = Mth.clamp(directorSeconds, 0.0, 600.0);
     }
 
     public void copyFrom(CinecamConfig other) {
@@ -107,5 +114,8 @@ public final class CinecamConfig {
         this.hideHud = other.hideHud;
         this.roll = other.roll;
         this.shake = other.shake;
+        this.cutDip = other.cutDip;
+        this.directorSeconds = other.directorSeconds;
+        this.director = other.director;
     }
 }

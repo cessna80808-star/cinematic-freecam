@@ -28,6 +28,8 @@ public final class CinecamClient implements ClientModInitializer {
     private KeyMapping toggleKey;
     private KeyMapping shotKey;
     private KeyMapping speedKey;
+    private KeyMapping freezeKey;
+    private KeyMapping directorKey;
 
     @Override
     public void onInitializeClient() {
@@ -49,6 +51,12 @@ public final class CinecamClient implements ClientModInitializer {
         speedKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
             "key.cinecam.speed", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F8, category
         ));
+        freezeKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+            "key.cinecam.freeze", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F9, category
+        ));
+        directorKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+            "key.cinecam.director", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F10, category
+        ));
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onEndTick);
         CinecamCommand.register();
@@ -65,6 +73,12 @@ public final class CinecamClient implements ClientModInitializer {
         }
         while (speedKey.consumeClick()) {
             camera.cycleSpeed();
+        }
+        while (freezeKey.consumeClick()) {
+            camera.toggleFreeze();
+        }
+        while (directorKey.consumeClick()) {
+            camera.toggleDirector();
         }
         camera.tick();
     }

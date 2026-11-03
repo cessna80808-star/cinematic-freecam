@@ -20,8 +20,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Runs after vanilla has positioned the camera, then replaces the position and
- * orientation with the cinematic pose. Doing this before the camera state is
- * extracted means the world, fog and projection all see the same camera.
+ * orientation with the cinematic pose. The intro starts inside the player's
+ * head and the outro returns there, so toggling never snaps.
  */
 @Mixin(Camera.class)
 public abstract class CameraMixin {
@@ -73,20 +73,33 @@ public abstract class CameraMixin {
         }
 
         float partialTicks = deltaTracker.getGameTimeDeltaPartialTick(true);
-        CameraPose pose = camera.pose(entity, partialTicks);
-        double blend = camera.blendEased();
+        CameraPose shot = camera.pose(entity, partialTicks);
+        double eased = camera.blendEased();
 
-        Vec3 vanillaPosition = this.position;
-        Quaternionf targetRotation = new Quaternionf().rotationYXZ(
-            (float) Math.PI - (float) Math.toRadians(pose.yaw()),
-            -(float) Math.toRadians(pose.pitch()),
-            (float) Math.toRadians(pose.roll())
-        );
-        Quaternionf blendedRotation = new Quaternionf(this.rotation).slerp(targetRotation, (float) blend);
+        CameraPose from;
+        CameraPose to;
+        double progress;
+        if (camera.isEnabled()) {
+            // Emerge from the player's eyes out to the shot.
+            from = camera.eyePose(entity, partialTicks);
+            to = shot;
+            progress = eased;
+        } else {
+            // Fall from the shot back to the player's eyes, or to the vanilla
+            // third-person camera when that is where we came from.
+            from = shot;
+            to = camera.returnsToFirstPerson()
+                ? camera.eyePose(entity, partialTicks)
+                : new CameraPose(this.position, this.yRot, this.xRot, 0.0F);
+            progress = 1.0 - eased;
+        }
 
-        this.setPosition(vanillaPosition.lerp(pose.pos(), blend));
-        this.setRotation(pose.yaw(), pose.pitch());
-        this.rotation.set(blendedRotation);
+        Vec3 resultPosition = from.pos().lerp(to.pos(), progress);
+        Quaternionf resultRotation = cinecam$quat(from).slerp(cinecam$quat(to), (float) progress);
+
+        this.setPosition(resultPosition);
+        this.setRotation(to.yaw(), to.pitch());
+        this.rotation.set(resultRotation);
         this.rotation.transform(new Vector3f(0.0F, 0.0F, -1.0F), this.forwards);
         this.rotation.transform(new Vector3f(0.0F, 1.0F, 0.0F), this.up);
         this.rotation.transform(new Vector3f(-1.0F, 0.0F, 0.0F), this.left);
@@ -107,7 +120,16 @@ public abstract class CameraMixin {
         if (blend <= 0.0) {
             return;
         }
+        float target = Mth.clamp((float) client.config().fov + camera.fovOffset(), 20.0F, 120.0F);
         float base = cir.getReturnValue();
-        cir.setReturnValue(Mth.lerp((float) blend, base, (float) client.config().fov));
+        cir.setReturnValue(Mth.lerp((float) blend, base, target));
+    }
+
+    private static Quaternionf cinecam$quat(CameraPose pose) {
+        return new Quaternionf().rotationYXZ(
+            (float) Math.PI - (float) Math.toRadians(pose.yaw()),
+            -(float) Math.toRadians(pose.pitch()),
+            (float) Math.toRadians(pose.roll())
+        );
     }
 }

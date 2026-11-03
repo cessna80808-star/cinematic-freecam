@@ -20,11 +20,16 @@ public final class CineCamera {
     private static final double[] SPEED_STEPS = {0.5, 0.75, 1.0, 1.5, 2.0};
     private static final String[] SPEED_LABELS = {"0.5x", "0.75x", "1x", "1.5x", "2x"};
     private static final long TOAST_MILLIS = 2600L;
+    private static final double CUT_SECONDS = 0.35;
 
     private final CinecamConfig config;
 
     private boolean enabled;
     private boolean engaged;
+    private boolean frozen;
+    private boolean directorEnabled;
+    private double directorTimer;
+    private double cutFade;
     private double blend;
     private double phase;
     private double frameDelta;
@@ -38,6 +43,7 @@ public final class CineCamera {
 
     public CineCamera(CinecamConfig config) {
         this.config = config;
+        this.directorEnabled = config.director;
     }
 
     public CinecamConfig config() {
@@ -57,14 +63,26 @@ public final class CineCamera {
         return engaged;
     }
 
+    public boolean isFrozen() {
+        return frozen;
+    }
+
+    public boolean isDirectorEnabled() {
+        return directorEnabled;
+    }
+
+    public double cutFade() {
+        return cutFade;
+    }
+
     public double blend() {
         return blend;
     }
 
-    /** Smoothstep-eased blend, used for all visual interpolation. */
+    /** Smootherstep-eased blend, used for all visual interpolation. */
     public double blendEased() {
-        double clamped = Mth.clamp(blend, 0.0, 1.0);
-        return clamped * clamped * (3.0 - 2.0 * clamped);
+        double t = Mth.clamp(blend, 0.0, 1.0);
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
     }
 
     public double speedFactor() {
@@ -88,6 +106,7 @@ public final class CineCamera {
             this.lastFrameNanos = -1L;
             this.anchor = null;
             this.staticAnchor = null;
+            this.directorTimer = 0.0;
             Minecraft minecraft = Minecraft.getInstance();
             this.savedCameraType = minecraft.options.getCameraType();
             minecraft.options.setCameraType(CameraType.THIRD_PERSON_BACK);
@@ -128,14 +147,33 @@ public final class CineCamera {
     }
 
     public void setShot(Shot shot) {
+        if (config.shot == shot) {
+            showToast(shot.displayName());
+            return;
+        }
         config.shot = shot;
         config.save(LOGGER);
+        directorTimer = 0.0;
+        cutFade = config.cutDip ? 1.0 : 0.0;
         showToast(shot.displayName());
     }
 
     public void cycleSpeed() {
         speedIndex = (speedIndex + 1) % SPEED_STEPS.length;
         showToast("Speed " + SPEED_LABELS[speedIndex]);
+    }
+
+    public void toggleFreeze() {
+        frozen = !frozen;
+        showToast(frozen ? "Frozen" : "Playing");
+    }
+
+    public void toggleDirector() {
+        directorEnabled = !directorEnabled;
+        directorTimer = 0.0;
+        config.director = directorEnabled;
+        config.save(LOGGER);
+        showToast(directorEnabled ? "Director on" : "Director off");
     }
 
     public void showToast(String text) {
@@ -160,6 +198,39 @@ public final class CineCamera {
     }
 
     /**
+     * A pose taken from inside the player's head, used as the start of the
+     * emerge animation and the end of the return animation.
+     */
+    public CameraPose eyePose(Entity entity, float partialTicks) {
+        return new CameraPose(
+            entity.getEyePosition(partialTicks),
+            entity.getViewYRot(partialTicks),
+            entity.getViewXRot(partialTicks),
+            0.0F
+        );
+    }
+
+    /**
+     * True when the ending transition should finish inside the player rather
+     * than at the vanilla third-person offset.
+     */
+    public boolean returnsToFirstPerson() {
+        return savedCameraType == CameraType.FIRST_PERSON;
+    }
+
+    /**
+     * Extra FOV applied by the active shot. Vertigo uses this for its dolly
+     * zoom: the camera pushes in while the lens widens.
+     */
+    public float fovOffset() {
+        if (config.shot == Shot.VERTIGO) {
+            double cycle = 0.5 - 0.5 * Math.cos(phase * 0.22);
+            return (float) ((cycle - 0.5) * 16.0);
+        }
+        return 0.0F;
+    }
+
+    /**
      * Advances shot time and the intro/outro blend. Uses wall-clock frame time
      * (clamped) so the move stays smooth and frame-rate independent.
      */
@@ -175,8 +246,20 @@ public final class CineCamera {
         }
         frameDelta = delta;
 
-        if (enabled) {
+        if (enabled && !frozen) {
             phase += delta * speedFactor();
+        }
+
+        if (enabled && directorEnabled && config.directorSeconds > 0.0) {
+            directorTimer += delta;
+            if (directorTimer >= config.directorSeconds) {
+                directorTimer = 0.0;
+                nextShot();
+            }
+        }
+
+        if (cutFade > 0.0) {
+            cutFade = Math.max(0.0, cutFade - delta / CUT_SECONDS);
         }
 
         double goal = enabled ? 1.0 : 0.0;
@@ -249,14 +332,45 @@ public final class CineCamera {
                 height = config.height * 0.4 + 5.0 * Math.sin(Math.PI * u);
                 roll = config.roll * 1.2 * Math.sin(Math.PI * u);
             }
+            case FIGURE8 -> {
+                theta = t * 0.18;
+                height += 1.4 + 1.2 * Math.sin(theta * 0.7);
+                roll = config.roll * 0.6 * Math.sin(theta);
+            }
+            case TOPDOWN -> {
+                theta = t * 0.12;
+                radius = Math.max(2.5, config.radius * 0.45);
+                height = config.height + 10.0 + 1.5 * Math.sin(t * 0.10);
+                roll = 0.0;
+            }
+            case PENDULUM -> {
+                theta = 1.25 * Math.sin(t * 0.35);
+                radius = config.radius * 1.1;
+                height = config.height + 1.0;
+                roll = config.roll * 0.8 * Math.sin(t * 0.35);
+            }
+            case VERTIGO -> {
+                theta = t * 0.14;
+                double cycle = 0.5 - 0.5 * Math.cos(t * 0.22);
+                radius *= 1.35 - 0.65 * cycle;
+                height += 0.4 * Math.sin(t * 0.14);
+                roll = 0.0;
+            }
             default -> {
                 theta = 0.0;
                 roll = 0.0;
             }
         }
 
-        double x = Math.cos(theta) * radius;
-        double z = Math.sin(theta) * radius;
+        double x;
+        double z;
+        if (config.shot == Shot.FIGURE8) {
+            x = Math.cos(theta) * radius;
+            z = Math.sin(2.0 * theta) * radius * 0.65;
+        } else {
+            x = Math.cos(theta) * radius;
+            z = Math.sin(theta) * radius;
+        }
 
         double shake = config.shake;
         if (shake > 0.0) {

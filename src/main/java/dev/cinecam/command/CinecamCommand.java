@@ -22,7 +22,7 @@ public final class CinecamCommand {
             dispatcher.register(ClientCommands.literal("cinecam")
                 .executes(context -> {
                     context.getSource().sendFeedback(Component.literal(
-                        "Cinecam: /cinecam on|off|toggle|shot <name>|speed|reload"
+                        "Cinecam: /cinecam on|off|toggle|shot <name>|next|freeze|director|speed|reload"
                     ));
                     return 1;
                 })
@@ -45,6 +45,11 @@ public final class CinecamCommand {
                     ));
                     return 1;
                 }))
+                .then(ClientCommands.literal("next").executes(context -> {
+                    camera().nextShot();
+                    context.getSource().sendFeedback(Component.literal("Shot: " + camera().shot().displayName()));
+                    return 1;
+                }))
                 .then(ClientCommands.literal("shot")
                     .then(ClientCommands.argument("name", StringArgumentType.word())
                         .suggests((context, builder) -> {
@@ -64,6 +69,20 @@ public final class CinecamCommand {
                             context.getSource().sendFeedback(Component.literal("Shot: " + shot.displayName()));
                             return 1;
                         })))
+                .then(ClientCommands.literal("freeze").executes(context -> {
+                    camera().toggleFreeze();
+                    context.getSource().sendFeedback(Component.literal(
+                        "Cinecam " + (camera().isFrozen() ? "frozen" : "playing")
+                    ));
+                    return 1;
+                }))
+                .then(ClientCommands.literal("director").executes(context -> {
+                    camera().toggleDirector();
+                    context.getSource().sendFeedback(Component.literal(
+                        "Director " + (camera().isDirectorEnabled() ? "on" : "off")
+                    ));
+                    return 1;
+                }))
                 .then(ClientCommands.literal("speed").executes(context -> {
                     camera().cycleSpeed();
                     context.getSource().sendFeedback(Component.literal(
