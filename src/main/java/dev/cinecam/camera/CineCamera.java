@@ -7,6 +7,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -26,6 +28,7 @@ public final class CineCamera {
     private static final String[] SPEED_LABELS = {"0.5x", "0.75x", "1x", "1.5x", "2x"};
     private static final long TOAST_MILLIS = 2600L;
     private static final double CUT_SECONDS = 0.35;
+    private static final double MAX_COMBAT_DISTANCE = 18.0;
 
     private final CinecamConfig config;
 
@@ -52,6 +55,17 @@ public final class CineCamera {
     private double miningWeight;
     private double combatWeight;
     private double collisionDistance = -1.0;
+
+    // Dynamic framing state. Keeping these out of pose() lets the adaptive
+    // camera react at tick rate while the render pose stays smooth.
+    private double smoothedSpeed;
+    private Vec3 smoothedVelocity = new Vec3(0.0, 0.0, 0.0);
+    private double framingYaw;
+    private double dynamicFov;
+    private int combatTargetId = -1;
+    private double retargetTimer;
+    private Vec3 combatPosition;
+    private Vec3 combatFocus;
 
     public CineCamera(CinecamConfig config) {
         this.config = config;
@@ -129,7 +143,15 @@ public final class CineCamera {
             this.miningWeight = 0.0;
             this.combatWeight = 0.0;
             this.collisionDistance = -1.0;
+            this.smoothedSpeed = 0.0;
+            this.smoothedVelocity = new Vec3(0.0, 0.0, 0.0);
+            this.dynamicFov = 0.0;
+            this.combatTargetId = -1;
+            this.retargetTimer = 0.0;
+            this.combatPosition = null;
+            this.combatFocus = null;
             Minecraft minecraft = Minecraft.getInstance();
+            this.framingYaw = minecraft.player == null ? 0.0 : minecraft.player.getViewYRot(1.0F);
             this.savedCameraType = minecraft.options.getCameraType();
             minecraft.options.setCameraType(CameraType.THIRD_PERSON_BACK);
         }
@@ -210,6 +232,14 @@ public final class CineCamera {
         dynamicEnabled = value;
         config.dynamic = value;
         config.save(LOGGER);
+        if (value) {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.player != null) {
+                framingYaw = minecraft.player.getViewYRot(1.0F);
+            }
+        } else {
+            retargetTimer = 0.0;
+        }
         showToast(value ? "Dynamic on" : "Classic mode");
     }
 
@@ -256,10 +286,13 @@ public final class CineCamera {
     }
 
     /**
-     * Extra FOV applied by the active shot. Vertigo uses this for its dolly
-     * zoom: the camera pushes in while the lens widens.
+     * Extra FOV applied by the active shot. Dynamic opens the lens slightly at
+     * speed and in combat; Vertigo uses it for its dolly zoom.
      */
     public float fovOffset() {
+        if (config.shot == Shot.DYNAMIC) {
+            return (float) dynamicFov;
+        }
         if (config.shot == Shot.VERTIGO) {
             double cycle = 0.5 - 0.5 * Math.cos(phase * 0.22);
             return (float) ((cycle - 0.5) * 16.0);
@@ -317,11 +350,27 @@ public final class CineCamera {
 
     /**
      * Watches what the player is doing and eases the Dynamic shot towards the
-     * right framing. Mining gets a behind-the-shoulder view, combat a wider
-     * rear three-quarter view, and moving expands the orbit radius.
+     * right framing. Mining gets a shoulder view, combat locks onto the enemy,
+     * and speed opens the orbit up instead of letting the player drift away.
      */
     private void updateDynamic(double delta) {
         Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player != null) {
+            double speed = horizontalSpeed(minecraft.player);
+            Vec3 flatVelocity = horizontalVelocity(minecraft.player);
+            double speedTarget = dynamicEnabled ? speed : 0.0;
+            Vec3 velocityTarget = dynamicEnabled ? flatVelocity : new Vec3(0.0, 0.0, 0.0);
+            double motionEase = 1.0 - Math.exp(-delta * 3.5);
+            smoothedSpeed += (speedTarget - smoothedSpeed) * motionEase;
+            smoothedVelocity = smoothedVelocity.lerp(velocityTarget, motionEase);
+
+            if (dynamicEnabled) {
+                double targetYaw = minecraft.player.getViewYRot(1.0F);
+                double yawRate = 4.0 + 8.0 * speedEase();
+                framingYaw += Mth.wrapDegrees(targetYaw - framingYaw) * (1.0 - Math.exp(-delta * yawRate));
+            }
+        }
+
         if (minecraft.player != null && dynamicEnabled) {
             boolean attacking = minecraft.player.swinging || minecraft.player.swingTime > 0;
             boolean combat = minecraft.player.hurtTime > 0
@@ -329,16 +378,28 @@ public final class CineCamera {
             boolean mining = attacking && minecraft.hitResult instanceof BlockHitResult;
 
             if (combat) {
-                combatTimer = 2.5;
+                combatTimer = 2.8;
                 miningTimer = 0.0;
+                retargetTimer -= delta;
+                if (retargetTimer <= 0.0 || combatTarget(minecraft) == null) {
+                    Entity target = findCombatTarget(minecraft, minecraft.player.hurtTime > 0);
+                    combatTargetId = target == null ? -1 : target.getId();
+                    retargetTimer = 0.55;
+                }
             } else if (mining) {
-                miningTimer = 1.2;
+                miningTimer = 1.8;
             }
         }
 
         if (!dynamicEnabled) {
             miningTimer = 0.0;
             combatTimer = 0.0;
+            combatTargetId = -1;
+            retargetTimer = 0.0;
+        }
+
+        if (combatTimer <= 0.0) {
+            combatTargetId = -1;
         }
 
         miningTimer = Math.max(0.0, miningTimer - delta);
@@ -346,14 +407,21 @@ public final class CineCamera {
 
         double combatTarget = combatTimer > 0.0 ? 1.0 : 0.0;
         double miningTarget = combatTimer > 0.0 ? 0.0 : (miningTimer > 0.0 ? 1.0 : 0.0);
-        double ease = 1.0 - Math.exp(-delta * 6.0);
-        miningWeight += (miningTarget - miningWeight) * ease;
-        combatWeight += (combatTarget - combatWeight) * ease;
+        double miningEase = 1.0 - Math.exp(-delta * (miningTarget > miningWeight ? 3.2 : 2.0));
+        double combatEase = 1.0 - Math.exp(-delta * (combatTarget > combatWeight ? 3.0 : 1.8));
+        miningWeight += (miningTarget - miningWeight) * miningEase;
+        combatWeight += (combatTarget - combatWeight) * combatEase;
+
+        double targetFov = dynamicEnabled
+            ? Mth.clamp(3.0 * speedEase() + 2.2 * combatWeight - 1.2 * miningWeight, -1.5, 5.0)
+            : 0.0;
+        dynamicFov += (targetFov - dynamicFov) * (1.0 - Math.exp(-delta * 2.5));
     }
 
     /**
      * Computes the shot for this frame. The anchor follows the player with a
-     * small exponential lag so walking does not make the camera jitter.
+     * capped lag: it is smooth at walking pace but never trails far enough at
+     * 400%+ speed to let the player leave the frame.
      */
     public CameraPose pose(Entity cameraEntity, float partialTicks) {
         Vec3 feet = cameraEntity.getPosition(partialTicks);
@@ -367,11 +435,13 @@ public final class CineCamera {
         if (anchor == null || anchor.distanceToSqr(feet) > 48.0 * 48.0) {
             anchor = feet;
         } else {
-            double alpha = 1.0 - Math.exp(-frameDelta * config.followRate);
+            double followSpeed = config.follow ? horizontalSpeed(cameraEntity) : 0.0;
+            double rate = Math.max(config.followRate, followSpeed / 0.35);
+            double alpha = 1.0 - Math.exp(-frameDelta * rate);
             anchor = anchor.lerp(feet, alpha);
         }
 
-        Vec3 lookAt = anchor.add(0.0, config.targetHeight, 0.0);
+        Vec3 baseFocus = anchor.add(0.0, config.targetHeight, 0.0);
         double t = phase;
         double radius = config.radius;
         double height = config.height;
@@ -380,11 +450,11 @@ public final class CineCamera {
 
         switch (config.shot) {
             case DYNAMIC -> {
-                theta = t * 0.16;
-                double movement = dynamicEnabled ? cameraEntity.getDeltaMovement().horizontalDistance() : 0.0;
-                radius = config.radius + (dynamicEnabled ? Math.min(2.5, movement * 8.0) : 0.0);
-                height = config.height + 0.5 * Math.sin(t * 0.33);
-                roll = config.roll * 0.25 * Math.sin(t * 0.21);
+                double speed = dynamicEnabled && config.follow ? speedEase() : 0.0;
+                theta = t * 0.14;
+                radius = config.radius + 2.2 * speed + 0.12 * Math.sin(t * 0.11);
+                height = config.height + 0.55 * speed + 0.22 * Math.sin(t * 0.29);
+                roll = config.roll * 0.22 * Math.sin(t * 0.21);
             }
             case ORBIT -> {
                 theta = t * 0.20;
@@ -465,12 +535,19 @@ public final class CineCamera {
         }
 
         Vec3 pos = new Vec3(anchor.x + x, anchor.y + height, anchor.z + z);
+        Vec3 lookAt = baseFocus;
         if (config.shot == Shot.DYNAMIC) {
-            pos = dynamicPosition(cameraEntity, partialTicks, anchor, pos);
+            Framing framing = dynamicFraming(partialTicks, anchor, pos, baseFocus);
+            pos = framing.position();
+            lookAt = framing.focus();
+            roll += combatWeight * 0.55 * Math.sin(phase * 0.45);
         }
         pos = resolveGeometry(cameraEntity, lookAt, pos);
 
         Vec3 direction = lookAt.subtract(pos);
+        if (direction.lengthSqr() < 1.0E-6) {
+            direction = new Vec3(0.0, 0.0, 1.0);
+        }
         double horizontal = Math.sqrt(direction.x * direction.x + direction.z * direction.z);
         float yaw = (float) Math.toDegrees(Math.atan2(-direction.x, direction.z));
         float pitch = (float) Math.toDegrees(Math.atan2(-direction.y, horizontal));
@@ -478,32 +555,201 @@ public final class CineCamera {
     }
 
     /**
-     * Blends the Dynamic shot's base orbit towards the mining and combat
-     * framings. Mining puts the camera behind the player's shoulder so the
-     * wall they are facing stays in front of them, not in front of the lens.
+     * Blends the Dynamic shot's base orbit, mining shoulder framing and combat
+     * framing. Positions and focus points are both blended so the shot keeps a
+     * deliberate composition instead of always pointing at the player's chest.
      */
-    private Vec3 dynamicPosition(Entity entity, float partialTicks, Vec3 anchor, Vec3 base) {
-        Vec3 result = base;
-        double yaw = Math.toRadians(entity.getViewYRot(partialTicks));
-        Vec3 forward = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw));
-        Vec3 right = new Vec3(Math.cos(yaw), 0.0, Math.sin(yaw));
+    private Framing dynamicFraming(float partialTicks, Vec3 anchor, Vec3 basePosition, Vec3 baseFocus) {
+        Vec3 position = basePosition;
+        Vec3 focus = baseFocus.add(0.0, 0.35, 0.0);
+
+        if (dynamicEnabled && config.follow) {
+            Vec3 lead = smoothedVelocity.scale(0.05);
+            double leadLength = lead.length();
+            if (leadLength > 1.0) {
+                lead = lead.scale(1.0 / leadLength);
+            }
+            focus = focus.add(lead);
+
+            // At SkyBlock speeds an orbit swings the lens into walls and lets
+            // the player slide around the frame. As speed builds, settle into
+            // a stable chase view behind the look direction instead.
+            double speed = speedEase();
+            if (speed > 0.001) {
+                Vec3 forward = forwardFromYaw(framingYaw);
+                Vec3 side = rightFromForward(forward);
+                Vec3 chasePosition = anchor.add(0.0, 2.55 + 0.25 * speed, 0.0)
+                    .subtract(forward.scale(5.2 + 1.9 * speed))
+                    .add(side.scale(0.45));
+                Vec3 chaseFocus = anchor.add(0.0, 1.45, 0.0)
+                    .add(forward.scale(0.8 + 0.5 * speed));
+                position = position.lerp(chasePosition, speed);
+                focus = focus.lerp(chaseFocus, speed);
+            }
+        }
 
         if (miningWeight > 0.001) {
-            Vec3 mining = anchor.add(0.0, 1.9, 0.0)
-                .subtract(forward.scale(4.2))
-                .add(right.scale(1.15));
-            result = result.lerp(mining, miningWeight);
+            Framing mining = miningFraming(anchor);
+            position = position.lerp(mining.position(), miningWeight);
+            focus = focus.lerp(mining.focus(), miningWeight);
         }
 
         if (combatWeight > 0.001) {
-            double angle = yaw + Math.PI + 0.5 * Math.sin(phase * 0.55);
-            double distance = Math.max(config.radius, 7.0);
-            Vec3 combat = anchor.add(0.0, 3.0 + 0.3 * Math.sin(phase * 0.8), 0.0)
-                .add(new Vec3(-Math.sin(angle) * distance, 0.0, Math.cos(angle) * distance));
-            result = result.lerp(combat, combatWeight);
+            Framing combat = combatFraming(partialTicks, anchor);
+            position = position.lerp(combat.position(), combatWeight);
+            focus = focus.lerp(combat.focus(), combatWeight);
         }
 
-        return result;
+        return new Framing(position, focus);
+    }
+
+    private Framing miningFraming(Vec3 anchor) {
+        Vec3 forward = forwardFromYaw(framingYaw);
+        Vec3 side = rightFromForward(forward);
+        Vec3 position = anchor.add(0.0, 1.72, 0.0)
+            .subtract(forward.scale(3.9))
+            .add(side.scale(0.85));
+        Vec3 focus = anchor.add(0.0, 1.35, 0.0)
+            .add(forward.scale(0.25))
+            .subtract(side.scale(0.80));
+        return new Framing(position, focus);
+    }
+
+    private Framing combatFraming(float partialTicks, Vec3 anchor) {
+        Minecraft minecraft = Minecraft.getInstance();
+        Entity target = combatTarget(minecraft);
+        Vec3 desiredPosition;
+        Vec3 desiredFocus;
+
+        if (target != null) {
+            Vec3 targetChest = target.getEyePosition(partialTicks).add(0.0, -0.35, 0.0);
+            Vec3 playerChest = anchor.add(0.0, 1.15, 0.0);
+            double separationX = playerChest.x - targetChest.x;
+            double separationZ = playerChest.z - targetChest.z;
+            double separation = Math.sqrt(separationX * separationX + separationZ * separationZ);
+            Vec3 away = separation > 1.0E-3
+                ? new Vec3(separationX / separation, 0.0, separationZ / separation)
+                : forwardFromYaw(framingYaw).scale(-1.0);
+            Vec3 side = rightFromForward(away);
+            double distance = Mth.clamp(6.2 + separation * 0.25, 6.2, 9.0);
+
+            desiredPosition = playerChest.add(away.scale(distance))
+                .add(side.scale(1.45))
+                .add(0.0, 1.50, 0.0);
+            desiredFocus = playerChest.lerp(targetChest, 0.70).add(0.0, 0.25, 0.0);
+        } else {
+            Vec3 forward = forwardFromYaw(framingYaw);
+            Vec3 side = rightFromForward(forward);
+            double distance = Mth.clamp(config.radius, 6.0, 9.0);
+            desiredPosition = anchor.add(0.0, 2.90, 0.0)
+                .subtract(forward.scale(distance))
+                .add(side.scale(0.90));
+            desiredFocus = anchor.add(0.0, 1.45, 0.0).add(forward.scale(0.40));
+        }
+
+        if (combatPosition == null || combatFocus == null) {
+            combatPosition = desiredPosition;
+            combatFocus = desiredFocus;
+        } else {
+            double alpha = 1.0 - Math.exp(-frameDelta * 5.0);
+            combatPosition = combatPosition.lerp(desiredPosition, alpha);
+            combatFocus = combatFocus.lerp(desiredFocus, alpha);
+        }
+        return new Framing(combatPosition, combatFocus);
+    }
+
+    private Entity combatTarget(Minecraft minecraft) {
+        if (combatTargetId == -1 || minecraft.player == null || minecraft.level == null) {
+            return null;
+        }
+        for (Entity candidate : minecraft.level.getEntities(
+            minecraft.player,
+            minecraft.player.getBoundingBox().inflate(MAX_COMBAT_DISTANCE)
+        )) {
+            if (candidate.getId() == combatTargetId && isValidTarget(candidate, minecraft.player)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private Entity findCombatTarget(Minecraft minecraft, boolean allowBehind) {
+        if (minecraft.player == null || minecraft.level == null) {
+            return null;
+        }
+
+        Entity crosshair = minecraft.crosshairPickEntity;
+        if (isValidTarget(crosshair, minecraft.player)) {
+            return crosshair;
+        }
+
+        Vec3 eye = minecraft.player.getEyePosition();
+        Vec3 look = minecraft.player.getViewVector(1.0F);
+        Entity best = null;
+        double bestScore = Double.MAX_VALUE;
+
+        for (Entity candidate : minecraft.level.getEntities(
+            minecraft.player,
+            minecraft.player.getBoundingBox().inflate(12.0)
+        )) {
+            if (!isValidTarget(candidate, minecraft.player)) {
+                continue;
+            }
+            Vec3 toCandidate = candidate.getEyePosition().subtract(eye);
+            double distance = toCandidate.length();
+            if (distance < 0.05 || distance > 12.0) {
+                continue;
+            }
+            double alignment = toCandidate.scale(1.0 / distance).dot(look);
+            if (!allowBehind && alignment < 0.15) {
+                continue;
+            }
+            double score = distance - Math.max(0.0, alignment) * 4.0;
+            if (score < bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private boolean isValidTarget(Entity entity, Entity player) {
+        if (entity == null || entity == player) {
+            return false;
+        }
+        if (!(entity instanceof LivingEntity living) || !living.isAlive()) {
+            return false;
+        }
+        if (entity instanceof ArmorStand) {
+            return false;
+        }
+        return entity.distanceToSqr(player) <= MAX_COMBAT_DISTANCE * MAX_COMBAT_DISTANCE;
+    }
+
+    private double speedEase() {
+        double speed = Mth.clamp((smoothedSpeed - 4.8) / 13.0, 0.0, 1.0);
+        return speed * speed * (3.0 - 2.0 * speed);
+    }
+
+    private static double horizontalSpeed(Entity entity) {
+        Vec3 movement = entity.getDeltaMovement();
+        return Math.sqrt(movement.x * movement.x + movement.z * movement.z);
+    }
+
+    private static Vec3 horizontalVelocity(Entity entity) {
+        Vec3 movement = entity.getDeltaMovement();
+        Vec3 flat = new Vec3(movement.x, 0.0, movement.z);
+        double length = flat.length();
+        return length > 24.0 ? flat.scale(24.0 / length) : flat;
+    }
+
+    private static Vec3 forwardFromYaw(double yawDegrees) {
+        double yaw = Math.toRadians(yawDegrees);
+        return new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw));
+    }
+
+    private static Vec3 rightFromForward(Vec3 forward) {
+        return new Vec3(forward.z, 0.0, -forward.x);
     }
 
     /**
@@ -576,5 +822,8 @@ public final class CineCamera {
         }
         BlockPos blockPos = BlockPos.containing(pos.x, pos.y, pos.z);
         return !minecraft.level.getBlockState(blockPos).getCollisionShape(minecraft.level, blockPos).isEmpty();
+    }
+
+    private record Framing(Vec3 position, Vec3 focus) {
     }
 }

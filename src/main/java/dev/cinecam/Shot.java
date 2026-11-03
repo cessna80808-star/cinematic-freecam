@@ -8,7 +8,7 @@ import java.util.Optional;
  * orbits, sweeps, swings or flies around the player.
  */
 public enum Shot {
-    DYNAMIC("Dynamic", "adapts to mining, combat and movement while staying out of walls"),
+    DYNAMIC("Dynamic", "frames mining, combat and high-speed movement while staying out of walls"),
     ORBIT("Orbit", "a slow, perfectly steady circle around the player"),
     SPIRAL("Spiral", "a circle that climbs and sinks while the radius breathes"),
     CRANE("Crane", "a jib-style orbit that descends and pushes in"),

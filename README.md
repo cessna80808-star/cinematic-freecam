@@ -11,7 +11,7 @@ exactly the same, only your view changes.
 
 | Shot | What it does |
 | --- | --- |
-| **Dynamic** | Reads what you are doing and adapts: behind the shoulder while mining, wider and higher in combat, a trailing orbit while exploring. Default shot. |
+| **Dynamic** | Reads what you are doing and adapts: a shoulder view while mining, a target-aware combat view, and a stable chase camera at 400%+ speed. Default shot. |
 | **Orbit** | A slow, perfectly steady circle around the player. The locked-off establishing shot. |
 | **Spiral** | Circles while climbing and sinking, with the radius breathing in and out. |
 | **Crane** | A jib-style orbit that starts high, descends and pushes in, then rises again. |
@@ -23,26 +23,31 @@ exactly the same, only your view changes.
 | **Vertigo** | A dolly-zoom orbit: the camera pushes in while the lens widens. |
 
 Every shot eases in and out over `introSeconds` instead of snapping, looks at the
-player, and follows them with a small exponential lag so walking doesn't jitter
-the frame. Handheld micro-shake is on by default; set `shake` to `0` for a
-locked-off camera.
+player, and follows them with a capped exponential lag: smooth at walking pace,
+but tight enough at high speed that the player never trails out of frame.
+Handheld micro-shake is on by default; set `shake` to `0` for a locked-off
+camera.
 
 ## Dynamic mode
 
 The **Dynamic** shot (the default) watches the player and blends between three
 framings:
 
-- **Mining** — when you swing at a block, the camera slides behind your shoulder
-  and looks at your back, keeping the face you are mining on the far side of you.
-  It stays on your side of the wall instead of clipping into it.
-- **Combat** — when you are hit or strike an entity, the camera pulls back into a
-  wide rear three-quarter view, with a slow sway, and the collision solver keeps
-  it clear of nearby walls.
-- **Exploring** — otherwise it drifts in a gentle orbit whose radius expands with
-  your movement speed, so sprinting opens the frame up.
+- **Mining** — when you swing at a block, the camera slides to shoulder height,
+  puts you on the right third of the frame, and looks past your back toward the
+  block. The side offset and collision solver keep it on your side of the wall.
+- **Combat** — when you are hit or strike an entity, the camera locks onto the
+  nearest valid enemy (preferring the crosshair), pulls back into a rear
+  three-quarter view, and frames both you and the target. Target changes are
+  smoothed, and the collision solver keeps the shot out of nearby walls.
+- **Exploring** — when you are slow it drifts in a gentle orbit. As speed builds
+  it blends into a stable chase camera behind your look direction, so 400%+
+  SkyBlock movement stays readable instead of orbiting into terrain.
 
 The sub-framings cross-fade with smoothed weights, so a fight starting mid-mine
-does not snap.
+does not snap. At speed the follow anchor is capped to roughly 0.35 blocks of
+lag and the lens opens by up to 3°, which keeps the player centered when moving
+at several times vanilla sprint speed.
 
 Press `F4` or run `/cinecam dynamic` to turn the adaptive framing off. Classic
 mode keeps the gentle Dynamic orbit but ignores mining, combat and movement
@@ -85,7 +90,7 @@ director mode.
 ## Install
 
 1. Install Fabric Loader for 26.2.
-2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.3.0.jar`
+2. Drop [Fabric API](https://modrinth.com/mod/fabric-api) and `cinecam-1.4.0.jar`
    into `.minecraft/mods`.
 3. Launch the game. Cinecam is client-only, so it also works on servers that
    don't have it installed (as long as they allow client mods).
@@ -102,6 +107,10 @@ director mode.
 | `F4` | Toggle dynamic / classic camera |
 
 All six can be rebound in **Options → Controls → Cinecam**.
+
+The shortcuts also poll raw key state, so they keep working when an external
+client such as Nebula leaves the mouse ungrabbed or a GUI screen owns input.
+Minecraft's normal key handling is still used, so rebinding works as usual.
 
 The current shot name appears briefly in the corner whenever it changes.
 
@@ -137,7 +146,7 @@ The current shot name appears briefly in the corner whenever it changes.
 | `height` | `2.4` | Camera height above the player's feet. |
 | `targetHeight` | `1.2` | Height of the point the camera aims at. |
 | `follow` | `true` | Follow the player. `false` anchors the shot where it started. |
-| `followRate` | `4.0` | How tightly the camera tracks a moving player. |
+| `followRate` | `4.0` | Minimum tracking rate. High speed automatically tightens this to cap the lag. |
 | `introSeconds` | `1.8` | Emerge / return duration. |
 | `fov` | `55` | Field of view while fully engaged. |
 | `letterbox` | `true` | Draw 2.39:1 cinematic bars. |
@@ -161,7 +170,7 @@ Cinecam targets 26.2 and needs **JDK 25**:
 ./gradlew build
 ```
 
-The mod jar lands in `build/libs/cinecam-1.3.0.jar`. For development,
+The mod jar lands in `build/libs/cinecam-1.4.0.jar`. For development,
 `./gradlew runClient` launches a Fabric dev client with the mod loaded.
 
 > Minecraft 26.2 ships unobfuscated, so this project has **no mappings
@@ -198,8 +207,8 @@ without editing the file:
 - During the intro it interpolates from the player's eye pose to the shot; during
   the outro it interpolates back to the eyes (or to the vanilla third-person
   camera if that is the perspective being restored).
-- `CineCamera#pose` computes each shot, blends the Dynamic mining/combat
-  framings, then runs the collision clip and distance smoothing.
+- `CineCamera#pose` computes each shot, blends the Dynamic base/chase, mining
+  and combat framings, then runs the collision clip and distance smoothing.
 - `CameraMixin` also overrides `Camera#calculateFov` so the custom FOV and the
   Vertigo lens offset reach the projection matrix.
 - `HudMixin` cancels HUD extraction while engaged (setting the vanilla

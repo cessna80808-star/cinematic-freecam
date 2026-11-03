@@ -1,1 +1,1 @@
-cea4652f92e2a1269e461be9d64e33e6db70694c09991ee2987c817da1ff7ac8  cinecam-1.3.0.jar
+c938b5b38d26704aceb9cfb6ba7ba39b5e06eff4e3c4efaaf378bcb599e71fa8  cinecam-1.4.0.jar

@@ -31,6 +31,7 @@ public final class CinecamClient implements ClientModInitializer {
     private KeyMapping freezeKey;
     private KeyMapping directorKey;
     private KeyMapping dynamicKey;
+    private final boolean[] keyWasDown = new boolean[6];
 
     @Override
     public void onInitializeClient() {
@@ -69,25 +70,50 @@ public final class CinecamClient implements ClientModInitializer {
     }
 
     private void onEndTick(Minecraft minecraft) {
-        while (toggleKey.consumeClick()) {
+        if (pressed(toggleKey, 0, minecraft)) {
             camera.toggle();
         }
-        while (shotKey.consumeClick()) {
+        if (pressed(shotKey, 1, minecraft)) {
             camera.nextShot();
         }
-        while (speedKey.consumeClick()) {
+        if (pressed(speedKey, 2, minecraft)) {
             camera.cycleSpeed();
         }
-        while (freezeKey.consumeClick()) {
+        if (pressed(freezeKey, 3, minecraft)) {
             camera.toggleFreeze();
         }
-        while (directorKey.consumeClick()) {
+        if (pressed(directorKey, 4, minecraft)) {
             camera.toggleDirector();
         }
-        while (dynamicKey.consumeClick()) {
+        if (pressed(dynamicKey, 5, minecraft)) {
             camera.toggleDynamic();
         }
         camera.tick();
+    }
+
+    /**
+     * Vanilla key mappings stop producing clicks while an ungrabbed-mouse GUI
+     * (for example Nebula's) owns input. Polling the physical key as a fallback
+     * keeps Cinecam's shortcuts working there, without double-firing when the
+     * normal click queue also saw the press.
+     */
+    private boolean pressed(KeyMapping mapping, int index, Minecraft minecraft) {
+        boolean clicked = false;
+        while (mapping.consumeClick()) {
+            clicked = true;
+        }
+
+        InputConstants.Key key = InputConstants.getKey(mapping.saveString());
+        boolean down = false;
+        if (key.getValue() >= 0 && key.getType() == InputConstants.Type.KEYSYM) {
+            down = GLFW.glfwGetKey(minecraft.getWindow().handle(), key.getValue()) == GLFW.GLFW_PRESS;
+        } else if (key.getValue() >= 0 && key.getType() == InputConstants.Type.MOUSE) {
+            down = GLFW.glfwGetMouseButton(minecraft.getWindow().handle(), key.getValue()) == GLFW.GLFW_PRESS;
+        }
+
+        boolean edge = down && !keyWasDown[index];
+        keyWasDown[index] = down;
+        return clicked || edge;
     }
 
     public void reloadConfig() {

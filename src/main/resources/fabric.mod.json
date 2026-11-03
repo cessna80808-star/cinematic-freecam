@@ -3,7 +3,7 @@
 	"id": "cinecam",
 	"version": "${version}",
 	"name": "Cinecam",
-	"description": "Ten cinematic free-camera shots, including an adaptive Dynamic camera with a classic-mode toggle that reacts to mining and combat and keeps itself out of walls. Client-side only.",
+	"description": "Ten cinematic free-camera shots, including a Dynamic camera with enemy-aware combat framing, stable 400%+ movement, and a classic-mode toggle. Client-side only.",
 	"authors": [
 		"Cinecam contributors"
 	],
