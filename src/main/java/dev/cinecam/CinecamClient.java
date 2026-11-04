@@ -3,6 +3,7 @@ package dev.cinecam;
 import com.mojang.blaze3d.platform.InputConstants;
 import dev.cinecam.camera.CineCamera;
 import dev.cinecam.command.CinecamCommand;
+import dev.cinecam.gui.CinecamScreen;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
@@ -31,7 +32,8 @@ public final class CinecamClient implements ClientModInitializer {
     private KeyMapping freezeKey;
     private KeyMapping directorKey;
     private KeyMapping dynamicKey;
-    private final boolean[] keyWasDown = new boolean[6];
+    private KeyMapping manualKey;
+    private final boolean[] keyWasDown = new boolean[7];
 
     @Override
     public void onInitializeClient() {
@@ -62,6 +64,9 @@ public final class CinecamClient implements ClientModInitializer {
         dynamicKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
             "key.cinecam.dynamic", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F4, category
         ));
+        manualKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+            "key.cinecam.manual", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_V, category
+        ));
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onEndTick);
         CinecamCommand.register();
@@ -71,6 +76,7 @@ public final class CinecamClient implements ClientModInitializer {
 
     private void onEndTick(Minecraft minecraft) {
         pollInput();
+        CinecamScreen.tickOpen();
     }
 
     /**
@@ -103,7 +109,59 @@ public final class CinecamClient implements ClientModInitializer {
         if (pressed(dynamicKey, 5, minecraft)) {
             camera.toggleDynamic();
         }
+        boolean manualPressed = pressed(manualKey, 6, minecraft);
+        if (manualPressed && minecraft.gui.screen() == null) {
+            camera.toggleManual();
+        }
+        pollManualAxes(minecraft);
         camera.tick();
+    }
+
+    /**
+     * Raw WASD reads only feed the manual camera mode. The player still moves
+     * normally; manual framing is an additive aim offset, not an input lock.
+     */
+    private void pollManualAxes(Minecraft minecraft) {
+        if (camera == null) {
+            return;
+        }
+        if (!camera.isManualEnabled() || !camera.isEnabled()
+            || minecraft.gui.screen() != null || minecraft.getWindow() == null) {
+            camera.setManualAxes(0.0, 0.0);
+            return;
+        }
+        long handle = minecraft.getWindow().handle();
+        if (GLFW.glfwGetWindowAttrib(handle, GLFW.GLFW_FOCUSED) != GLFW.GLFW_TRUE) {
+            camera.setManualAxes(0.0, 0.0);
+            return;
+        }
+        double forward = (keyDown(handle, GLFW.GLFW_KEY_W) ? 1.0 : 0.0)
+            - (keyDown(handle, GLFW.GLFW_KEY_S) ? 1.0 : 0.0);
+        double right = (keyDown(handle, GLFW.GLFW_KEY_D) ? 1.0 : 0.0)
+            - (keyDown(handle, GLFW.GLFW_KEY_A) ? 1.0 : 0.0);
+        camera.setManualAxes(forward, right);
+    }
+
+    private static boolean keyDown(long handle, int key) {
+        return GLFW.glfwGetKey(handle, key) == GLFW.GLFW_PRESS;
+    }
+
+    /**
+     * Consumes the mouse wheel only while manual framing is live, so zooming
+     * the lens does not also change the hotbar slot. GUI screens keep their
+     * normal scroll handling.
+     */
+    public boolean handleManualScroll(double amount) {
+        if (camera == null || amount == 0.0
+            || !camera.isManualEnabled() || !camera.isEnabled()) {
+            return false;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.gui.screen() != null) {
+            return false;
+        }
+        camera.adjustManualZoom(amount);
+        return true;
     }
 
     /**

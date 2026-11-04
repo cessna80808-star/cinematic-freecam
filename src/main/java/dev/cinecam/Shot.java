@@ -8,13 +8,12 @@ import java.util.Optional;
  * orbits, sweeps, swings or flies around the player.
  */
 public enum Shot {
-    DYNAMIC("Dynamic", "frames mining, combat and high-speed movement while staying out of walls"),
+    DYNAMIC("Dynamic", "frames mining, combat, high-speed movement and teleports while staying out of walls"),
     ORBIT("Orbit", "a slow, perfectly steady circle around the player"),
     SPIRAL("Spiral", "a circle that climbs and sinks while the radius breathes"),
     CRANE("Crane", "a jib-style orbit that descends and pushes in"),
     DOLLY("Dolly", "an orbit with a slow in-and-out push and a gentle roll"),
-    FLYBY("Flyby", "a wide low-to-high pass that sweeps past the player"),
-    FIGURE8("Figure 8", "a lemniscate that loops in front of and behind the player"),
+    FLYBY("Flyby", "a wide low-to-high loop with a close pass"),
     TOPDOWN("Top Down", "a high overhead orbit that looks straight down"),
     PENDULUM("Pendulum", "a slow arc that swings past the player and back"),
     VERTIGO("Vertigo", "a dolly-zoom orbit that pushes in as the lens widens");

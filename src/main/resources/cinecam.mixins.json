@@ -6,7 +6,8 @@
 		"CameraMixin",
 		"EntityRenderDispatcherMixin",
 		"HudMixin",
-		"LivingEntityRendererMixin"
+		"LivingEntityRendererMixin",
+		"MouseHandlerMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

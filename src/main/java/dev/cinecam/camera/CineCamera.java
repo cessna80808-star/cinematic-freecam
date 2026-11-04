@@ -4,12 +4,12 @@ import dev.cinecam.CinecamConfig;
 import dev.cinecam.Shot;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -30,12 +30,29 @@ public final class CineCamera {
     private static final double CUT_SECONDS = 0.35;
     private static final double MAX_COMBAT_DISTANCE = 18.0;
     private static final double SETTLE_SECONDS = 0.18;
-    private static final double RIG_SEARCH_INTERVAL = 0.22;
+    private static final double RIG_SEARCH_INTERVAL = 0.18;
+    private static final double RIG_RECENTER_INTERVAL = 0.12;
+    private static final double RIG_RECENTER_RATE = 1.6;
+    private static final double CLAMP_OUT_RATE = 4.0;
+    private static final double TELEPORT_MIN_DISTANCE = 2.5;
+    private static final double TELEPORT_MIN_SPEED = 30.0;
+    private static final double TELEPORT_MEMORY_SECONDS = 1.6;
+    private static final double MANUAL_PAN_LIMIT = 4.0;
+    private static final double MANUAL_PAN_SPEED = 3.2;
+    private static final double MANUAL_PAN_EASE = 9.0;
+    private static final double MANUAL_ZOOM_LIMIT = 28.0;
+    private static final double MANUAL_ZOOM_STEP = 4.0;
+    private static final double MANUAL_ZOOM_EASE = 12.0;
     private static final double[] RIG_ANGLE_OFFSETS = {
-        0.0, 0.35, -0.35, 0.70, -0.70, 1.05, -1.05, 1.40, -1.40, Math.PI
+        0.0, 0.393, -0.393, 0.785, -0.785, 1.178, -1.178, 1.571,
+        -1.571, 1.963, -1.963, 2.356, -2.356, 2.749, -2.749, Math.PI
     };
-    private static final double[] RIG_HEIGHT_OFFSETS = {0.0, 0.9, -0.9, 1.8, -1.8, 2.6};
-    private static final double[] RIG_DISTANCE_FACTORS = {1.0, 0.82, 0.64, 0.50};
+    private static final double[] RIG_HEIGHT_OFFSETS = {
+        0.0, 0.8, -0.8, 1.6, -1.6, 2.4, 3.2
+    };
+    private static final double[] RIG_DISTANCE_FACTORS = {
+        1.0, 0.86, 0.72, 0.58, 0.44, 0.30
+    };
 
     private final CinecamConfig config;
 
@@ -75,7 +92,21 @@ public final class CineCamera {
     private double rigHeightOffset;
     private double rigDistanceFactor = 1.0;
     private double rigSearchTimer;
-    private double rigClearance = 1.0;
+    private Vec3 clampOrigin;
+    private Vec3 clampDirection;
+    private double clampDistance = -1.0;
+
+    // Manual framing is deliberately separate from the shot state. It layers
+    // a small aim offset and lens zoom over whichever shot is playing.
+    private boolean manualEnabled;
+    private double manualForwardAxis;
+    private double manualRightAxis;
+    private double manualPanForward;
+    private double manualPanRight;
+    private double manualPanForwardTarget;
+    private double manualPanRightTarget;
+    private double manualZoom;
+    private double manualZoomTarget;
 
     // Dynamic framing state. Keeping these out of pose() lets the adaptive
     // camera react at tick rate while the render pose stays smooth.
@@ -87,6 +118,15 @@ public final class CineCamera {
     private double retargetTimer;
     private Vec3 combatPosition;
     private Vec3 combatFocus;
+
+    // Teleport pursuit state. AOTV-style jumps arrive as huge position deltas
+    // with little or no ordinary velocity, so they are tracked separately from
+    // the smoothed walking/running speed.
+    private Vec3 observedPosition;
+    private Vec3 teleportDirection = Vec3.ZERO;
+    private double teleportEnergy;
+    private double teleportJumpDistance;
+    private boolean teleportSnap;
 
     public CineCamera(CinecamConfig config) {
         this.config = config;
@@ -121,6 +161,72 @@ public final class CineCamera {
 
     public boolean isDynamicEnabled() {
         return dynamicEnabled;
+    }
+
+    public boolean isManualEnabled() {
+        return manualEnabled;
+    }
+
+    public void toggleManual() {
+        setManualEnabled(!manualEnabled);
+    }
+
+    public void setManualEnabled(boolean value) {
+        if (this.manualEnabled == value) {
+            return;
+        }
+        this.manualEnabled = value;
+        this.manualForwardAxis = 0.0;
+        this.manualRightAxis = 0.0;
+        if (!value) {
+            this.manualPanForwardTarget = 0.0;
+            this.manualPanRightTarget = 0.0;
+            this.manualZoomTarget = 0.0;
+            if (!this.enabled) {
+                this.manualPanForward = 0.0;
+                this.manualPanRight = 0.0;
+                this.manualZoom = 0.0;
+            }
+        }
+        showToast(value ? "Manual pan on" : "Manual pan off");
+    }
+
+    /**
+     * Sets the raw WASD axes. The camera advances the pan from these axes in
+     * pose/advance time, so input polling cannot change the framing twice.
+     */
+    public void setManualAxes(double forward, double right) {
+        if (!this.manualEnabled) {
+            this.manualForwardAxis = 0.0;
+            this.manualRightAxis = 0.0;
+            return;
+        }
+        this.manualForwardAxis = Mth.clamp(forward, -1.0, 1.0);
+        this.manualRightAxis = Mth.clamp(right, -1.0, 1.0);
+    }
+
+    /** Scroll up narrows the lens; the caller consumes the wheel event. */
+    public void adjustManualZoom(double amount) {
+        if (!this.manualEnabled || amount == 0.0) {
+            return;
+        }
+        this.manualZoomTarget = Mth.clamp(
+            this.manualZoomTarget - amount * MANUAL_ZOOM_STEP,
+            -MANUAL_ZOOM_LIMIT,
+            MANUAL_ZOOM_LIMIT
+        );
+    }
+
+    public void resetManualOffset() {
+        this.manualForwardAxis = 0.0;
+        this.manualRightAxis = 0.0;
+        this.manualPanForward = 0.0;
+        this.manualPanRight = 0.0;
+        this.manualPanForwardTarget = 0.0;
+        this.manualPanRightTarget = 0.0;
+        this.manualZoom = 0.0;
+        this.manualZoomTarget = 0.0;
+        showToast("Manual offset centered");
     }
 
     public double cutFade() {
@@ -159,6 +265,7 @@ public final class CineCamera {
             this.settleTimer = 0.0;
             this.handoffPose = null;
             resetRig();
+            resetTeleportTracking();
         }
         if (value && fresh) {
             this.engaged = true;
@@ -184,6 +291,7 @@ public final class CineCamera {
             this.settleTimer = 0.0;
             this.handoffPose = null;
             resetRig();
+            resetTeleportTracking();
             Minecraft minecraft = Minecraft.getInstance();
             this.framingYaw = minecraft.player == null ? 0.0 : minecraft.player.getViewYRot(1.0F);
             this.savedCameraType = minecraft.options.getCameraType();
@@ -368,14 +476,19 @@ public final class CineCamera {
      * speed and in combat; Vertigo uses it for its dolly zoom.
      */
     public float fovOffset() {
+        double shotOffset = 0.0;
         if (config.shot == Shot.DYNAMIC) {
-            return (float) dynamicFov;
-        }
-        if (config.shot == Shot.VERTIGO) {
+            shotOffset = dynamicFov;
+        } else if (config.shot == Shot.VERTIGO) {
             double cycle = 0.5 - 0.5 * Math.cos(phase * 0.22);
-            return (float) ((cycle - 0.5) * 16.0);
+            shotOffset = (cycle - 0.5) * 16.0;
         }
-        return 0.0F;
+        double total = config.fov + shotOffset + manualZoom;
+        return (float) (Mth.clamp(total, 20.0, 120.0) - config.fov);
+    }
+
+    public float effectiveFov() {
+        return Mth.clamp((float) config.fov + fovOffset(), 20.0F, 120.0F);
     }
 
     /**
@@ -398,6 +511,7 @@ public final class CineCamera {
         }
         frameDelta = delta;
         justRestoredPerspective = false;
+        updateManual(delta);
 
         if (enabled && !frozen) {
             phase += delta * speedFactor();
@@ -451,17 +565,17 @@ public final class CineCamera {
         if (minecraft.player != null) {
             double speed = horizontalSpeed(minecraft.player);
             Vec3 flatVelocity = horizontalVelocity(minecraft.player);
-            double speedTarget = dynamicEnabled ? speed : 0.0;
-            Vec3 velocityTarget = dynamicEnabled ? flatVelocity : new Vec3(0.0, 0.0, 0.0);
+            // Track the player's real speed even in classic mode. The
+            // high-speed stabilizer uses this for every shot.
+            double speedTarget = speed;
+            Vec3 velocityTarget = flatVelocity;
             double motionEase = 1.0 - Math.exp(-delta * 3.5);
             smoothedSpeed += (speedTarget - smoothedSpeed) * motionEase;
             smoothedVelocity = smoothedVelocity.lerp(velocityTarget, motionEase);
 
-            if (dynamicEnabled) {
-                double targetYaw = minecraft.player.getViewYRot(1.0F);
-                double yawRate = 4.0 + 8.0 * speedEase();
-                framingYaw += Mth.wrapDegrees(targetYaw - framingYaw) * (1.0 - Math.exp(-delta * yawRate));
-            }
+            double targetYaw = minecraft.player.getViewYRot(1.0F);
+            double yawRate = 4.0 + 8.0 * speedEase();
+            framingYaw += Mth.wrapDegrees(targetYaw - framingYaw) * (1.0 - Math.exp(-delta * yawRate));
         }
 
         if (minecraft.player != null && dynamicEnabled) {
@@ -515,12 +629,85 @@ public final class CineCamera {
     }
 
     /**
+     * Eases the manual aim offset and lens zoom. The pan target is integrated
+     * from the held axes, while the current offset follows it smoothly; the
+     * target physics are untouched by render frequency because advance() owns
+     * the frame delta.
+     */
+    private void updateManual(double delta) {
+        if (!manualEnabled) {
+            manualForwardAxis = 0.0;
+            manualRightAxis = 0.0;
+            manualPanForwardTarget = 0.0;
+            manualPanRightTarget = 0.0;
+            manualZoomTarget = 0.0;
+        } else if (enabled) {
+            manualPanForwardTarget = Mth.clamp(
+                manualPanForwardTarget + manualForwardAxis * MANUAL_PAN_SPEED * delta,
+                -MANUAL_PAN_LIMIT,
+                MANUAL_PAN_LIMIT
+            );
+            manualPanRightTarget = Mth.clamp(
+                manualPanRightTarget + manualRightAxis * MANUAL_PAN_SPEED * delta,
+                -MANUAL_PAN_LIMIT,
+                MANUAL_PAN_LIMIT
+            );
+        }
+
+        if (delta <= 0.0) {
+            return;
+        }
+        double panEase = 1.0 - Math.exp(-delta * MANUAL_PAN_EASE);
+        double zoomEase = 1.0 - Math.exp(-delta * MANUAL_ZOOM_EASE);
+        manualPanForward += (manualPanForwardTarget - manualPanForward) * panEase;
+        manualPanRight += (manualPanRightTarget - manualPanRight) * panEase;
+        manualZoom += (manualZoomTarget - manualZoom) * zoomEase;
+        if (Math.abs(manualPanForward - manualPanForwardTarget) < 0.0005) {
+            manualPanForward = manualPanForwardTarget;
+        }
+        if (Math.abs(manualPanRight - manualPanRightTarget) < 0.0005) {
+            manualPanRight = manualPanRightTarget;
+        }
+        if (Math.abs(manualZoom - manualZoomTarget) < 0.001) {
+            manualZoom = manualZoomTarget;
+        }
+    }
+
+    /**
+     * Shifts the aim point across the camera plane. The camera position and
+     * collision rig are unchanged, so a manual pan can never push the lens
+     * into a wall.
+     */
+    private Vec3 applyManualPan(Vec3 pos, Vec3 focus) {
+        if (Math.abs(manualPanForward) < 0.0001 && Math.abs(manualPanRight) < 0.0001) {
+            return focus;
+        }
+        Vec3 forward = new Vec3(focus.x - pos.x, 0.0, focus.z - pos.z);
+        double forwardDistance = forward.length();
+        if (forwardDistance < 1.0E-3) {
+            forward = forwardFromYaw(framingYaw);
+            forwardDistance = 1.0;
+        }
+        forward = forward.scale(1.0 / forwardDistance);
+        // Keep a close shot from panning the aim through the lens and flipping
+        // the view 180 degrees. Sideways pan is still free.
+        double appliedForward = Mth.clamp(
+            manualPanForward,
+            -forwardDistance * 0.65,
+            forwardDistance * 0.90
+        );
+        Vec3 right = new Vec3(-forward.z, 0.0, forward.x);
+        return focus.add(right.scale(manualPanRight)).add(forward.scale(appliedForward));
+    }
+
+    /**
      * Computes the shot for this frame. The anchor follows the player with a
      * capped lag: it is smooth at walking pace but never trails far enough at
      * 400%+ speed to let the player leave the frame.
      */
     public CameraPose pose(Entity cameraEntity, float partialTicks) {
         Vec3 feet = cameraEntity.getPosition(partialTicks);
+        updateTeleportTracking(cameraEntity.position());
         if (!config.follow) {
             if (staticAnchor == null) {
                 staticAnchor = feet;
@@ -528,14 +715,25 @@ public final class CineCamera {
             feet = staticAnchor;
         }
 
-        if (anchor == null || anchor.distanceToSqr(feet) > 48.0 * 48.0) {
-            anchor = feet;
-        } else {
-            double followSpeed = config.follow ? horizontalSpeed(cameraEntity) : 0.0;
+        if (anchor == null || teleportSnap || anchor.distanceToSqr(feet) > 48.0 * 48.0) {
+            // Use the raw position for a teleport snap. The partial-tick feet
+            // can still be interpolating across the jump, which is exactly the
+            // lag this is meant to remove. A non-following shot must stay
+            // anchored even when the player teleports.
+            anchor = config.follow && teleportSnap ? cameraEntity.position() : feet;
+        } else if (config.follow) {
+            double followSpeed = horizontalSpeed(cameraEntity);
             double rate = Math.max(config.followRate, followSpeed / 0.35);
+            // A teleport must not leave the orbit centre behind. The tracking
+            // pulse keeps the catch-up rate high after the jump as well, so a
+            // chain of AOTV jumps does not turn into a trail of stale anchors.
+            if (teleportEnergy > 0.0) {
+                rate = Math.max(rate, 18.0 + 72.0 * teleportEnergy);
+            }
             double alpha = 1.0 - Math.exp(-frameDelta * rate);
             anchor = anchor.lerp(feet, alpha);
         }
+        teleportSnap = false;
 
         Vec3 baseFocus = anchor.add(0.0, config.targetHeight, 0.0);
         double t = phase;
@@ -577,15 +775,12 @@ public final class CineCamera {
             }
             case FLYBY -> {
                 double u = (t % 18.0) / 18.0;
-                theta = -2.1 + u * 4.2;
+                // A full turn keeps the flyby loop continuous instead of
+                // cutting from one side of the player to the other.
+                theta = -2.1 + u * Math.PI * 2.0;
                 radius = 15.0 - 7.0 * Math.sin(Math.PI * u);
                 height = config.height * 0.4 + 5.0 * Math.sin(Math.PI * u);
                 roll = config.roll * 1.2 * Math.sin(Math.PI * u);
-            }
-            case FIGURE8 -> {
-                theta = t * 0.18;
-                height += 1.4 + 1.2 * Math.sin(theta * 0.7);
-                roll = config.roll * 0.6 * Math.sin(theta);
             }
             case TOPDOWN -> {
                 theta = t * 0.12;
@@ -612,17 +807,14 @@ public final class CineCamera {
             }
         }
 
-        double x;
-        double z;
-        if (config.shot == Shot.FIGURE8) {
-            x = Math.cos(theta) * radius;
-            z = Math.sin(2.0 * theta) * radius * 0.65;
-        } else {
-            x = Math.cos(theta) * radius;
-            z = Math.sin(theta) * radius;
-        }
+        double motionStability = config.follow
+            ? Mth.clamp(Math.max(speedEase(), teleportEnergy * 0.85), 0.0, 1.0)
+            : 0.0;
 
-        double shake = config.shake;
+        double x = Math.cos(theta) * radius;
+        double z = Math.sin(theta) * radius;
+
+        double shake = config.shake * (1.0 - 0.85 * motionStability);
         if (shake > 0.0) {
             x += (Math.sin(t * 2.1) + 0.5 * Math.sin(t * 5.3 + 1.7)) * shake;
             height += (Math.sin(t * 2.7 + 0.6) + 0.5 * Math.sin(t * 6.1)) * shake;
@@ -638,7 +830,19 @@ public final class CineCamera {
             lookAt = framing.focus();
             roll += combatWeight * 0.55 * Math.sin(phase * 0.45);
         }
+        // Dynamic already has a dedicated high-speed chase. Every other shot,
+        // including classic Dynamic, eases into the same stable rear chase so
+        // a fast player never slides out of an orbit that is still swinging.
+        if (config.follow
+            && (config.shot != Shot.DYNAMIC || !dynamicEnabled)
+            && motionStability > 0.001) {
+            Framing stabilized = stableChase(anchor, pos, lookAt, motionStability);
+            pos = stabilized.position();
+            lookAt = stabilized.focus();
+        }
+        roll *= 1.0 - 0.7 * motionStability;
         pos = resolveGeometry(cameraEntity, lookAt, pos);
+        lookAt = applyManualPan(pos, lookAt);
 
         Vec3 direction = lookAt.subtract(pos);
         if (direction.lengthSqr() < 1.0E-6) {
@@ -696,7 +900,61 @@ public final class CineCamera {
             focus = focus.lerp(combat.focus(), combatWeight);
         }
 
+        // A teleport is not ordinary fast movement: the player can cross the
+        // whole frame between two render frames. Keep a pursuit chase active
+        // for a moment after the jump, using the actual jump direction rather
+        // than the view direction, so the next jump is already framed.
+        if (config.follow && teleportEnergy > 0.01) {
+            Framing pursuit = teleportPursuit(anchor, speedEase());
+            double weight = Mth.clamp(teleportEnergy * 1.7, 0.0, 1.0);
+            position = position.lerp(pursuit.position(), weight);
+            focus = focus.lerp(pursuit.focus(), weight);
+        }
+
         return new Framing(position, focus);
+    }
+
+    private Framing teleportPursuit(Vec3 anchor, double speed) {
+        Vec3 forward = teleportDirection.lengthSqr() > 1.0E-6
+            ? teleportDirection
+            : forwardFromYaw(framingYaw);
+        Vec3 side = rightFromForward(forward);
+        double jumpBoost = Math.min(4.5, teleportJumpDistance * 0.28);
+        double distance = 5.2 + 2.2 * speed + jumpBoost;
+        Vec3 position = anchor.add(0.0, 2.55 + 0.35 * speed, 0.0)
+            .subtract(forward.scale(distance))
+            .add(side.scale(0.45));
+        double lead = 0.95 + 1.0 * speed + Math.min(3.5, teleportJumpDistance * 0.18);
+        Vec3 focus = anchor.add(0.0, 1.45, 0.0).add(forward.scale(lead));
+        return new Framing(position, focus);
+    }
+
+    /**
+     * A calm rear chase used by every non-Dynamic shot once movement gets
+     * fast, and by all shots during a teleport. The shot keeps its own motion
+     * at normal speed; at speed it gives way to a predictable over-the-shoulder
+     * composition instead of swinging through nearby walls.
+     */
+    private Framing stableChase(Vec3 anchor, Vec3 position, Vec3 focus, double stability) {
+        double speed = speedEase();
+        double jump = Mth.clamp(teleportEnergy, 0.0, 1.0);
+        Vec3 forward = jump > 0.05 && teleportDirection.lengthSqr() > 1.0E-6
+            ? teleportDirection
+            : forwardFromYaw(framingYaw);
+        Vec3 side = rightFromForward(forward);
+        double jumpBoost = Math.min(4.5, teleportJumpDistance * 0.28) * jump;
+        double distance = 5.2 + 2.2 * speed + jumpBoost;
+        Vec3 chasePosition = anchor.add(0.0, 2.35 + 0.4 * speed, 0.0)
+            .subtract(forward.scale(distance))
+            .add(side.scale(0.45));
+        double lead = 0.95 + 1.0 * speed
+            + Math.min(3.5, teleportJumpDistance * 0.18) * jump;
+        Vec3 chaseFocus = anchor.add(0.0, 1.35, 0.0).add(forward.scale(lead));
+        double weight = Mth.clamp(stability * 1.1, 0.0, 0.92);
+        return new Framing(
+            position.lerp(chasePosition, weight),
+            focus.lerp(chaseFocus, weight)
+        );
     }
 
     private Framing miningFraming(Vec3 anchor) {
@@ -849,6 +1107,56 @@ public final class CineCamera {
     }
 
     /**
+     * Detects a teleport from the raw local-player position, remembers its
+     * direction and distance, and keeps pursuit mode alive briefly. Treating a
+     * jump as an isolated correction makes the camera chase the old position;
+     * treating a recent jump as a direction of travel anticipates the next one.
+     */
+    private void updateTeleportTracking(Vec3 currentPosition) {
+        if (observedPosition == null) {
+            observedPosition = currentPosition;
+            return;
+        }
+        if (frameDelta <= 1.0E-5) {
+            observedPosition = currentPosition;
+            return;
+        }
+        Vec3 step = currentPosition.subtract(observedPosition);
+        observedPosition = currentPosition;
+        double horizontal = step.horizontalDistance();
+        double speed = horizontal / frameDelta;
+        if (horizontal >= TELEPORT_MIN_DISTANCE && speed >= TELEPORT_MIN_SPEED) {
+            Vec3 direction = step.horizontal();
+            if (direction.lengthSqr() > 1.0E-6) {
+                direction = direction.normalize();
+                if (teleportEnergy > 0.05 && teleportDirection.lengthSqr() > 1.0E-6) {
+                    teleportDirection = teleportDirection.scale(0.35).add(direction.scale(0.65)).normalize();
+                } else {
+                    teleportDirection = direction;
+                }
+            }
+            teleportJumpDistance = teleportEnergy > 0.05
+                ? Mth.lerp(0.45, teleportJumpDistance, horizontal)
+                : horizontal;
+            teleportEnergy = 1.0;
+            teleportSnap = true;
+            // Rebuild the rig at the new position immediately; easing a camera
+            // across the jump is what put the player outside the frame.
+            rigReady = false;
+            rigSearchTimer = 0.0;
+        }
+        teleportEnergy = Math.max(0.0, teleportEnergy - frameDelta / TELEPORT_MEMORY_SECONDS);
+    }
+
+    private void resetTeleportTracking() {
+        observedPosition = null;
+        teleportDirection = Vec3.ZERO;
+        teleportEnergy = 0.0;
+        teleportJumpDistance = 0.0;
+        teleportSnap = false;
+    }
+
+    /**
      * Smooths the camera around the focus and looks for an open angle instead of
      * snapping straight into the player when a wall appears. Full distance is
      * preferred; shorter distances are only used when no open angle exists.
@@ -857,17 +1165,14 @@ public final class CineCamera {
         Minecraft minecraft = Minecraft.getInstance();
         if (!config.avoidGeometry || minecraft.level == null) {
             rigReady = false;
+            resetClampSmoothing();
             return desired;
         }
 
         Vec3 offset = desired.subtract(focus);
         double baseHorizontal = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
         if (baseHorizontal < 1.0E-4) {
-            Vec3 result = desired;
-            for (int i = 0; i < 6 && nearSolid(minecraft, result); i++) {
-                result = result.lerp(focus, 0.2);
-            }
-            return result;
+            return clampCamera(entity, focus, desired);
         }
 
         double baseAngle = Math.atan2(offset.z, offset.x);
@@ -880,12 +1185,20 @@ public final class CineCamera {
             baseVertical + rigHeightOffset
         );
         Vec3 currentPosition = candidatePosition(focus, current);
-        if (!rigReady || rigSearchTimer <= 0.0 || !isClear(entity, focus, currentPosition)) {
+        boolean blocked = !isClear(entity, focus, currentPosition);
+        // Search only when the current safe target actually needs replacing.
+        // The old code ran the full global scan every 0.18 s even in open air,
+        // and re-ran it every frame while clamped, which made the rig flip sides
+        // around corners. Recentering is a separate, small, checked step.
+        if (!rigReady || (rigSearchTimer <= 0.0 && blocked)) {
             Candidate chosen = chooseCandidate(entity, focus, baseAngle, baseHorizontal, baseVertical);
             rigAngleOffset = Math.toRadians(Mth.wrapDegrees(Math.toDegrees(chosen.angle - baseAngle)));
             rigDistanceFactor = baseHorizontal < 1.0E-4 ? 1.0 : chosen.horizontal / baseHorizontal;
             rigHeightOffset = chosen.vertical - baseVertical;
             rigSearchTimer = RIG_SEARCH_INTERVAL;
+        } else if (rigReady && rigSearchTimer <= 0.0) {
+            recenterRig(entity, focus, baseAngle, baseHorizontal, baseVertical);
+            rigSearchTimer = RIG_RECENTER_INTERVAL;
         }
 
         double targetAngle = baseAngle + rigAngleOffset;
@@ -910,45 +1223,58 @@ public final class CineCamera {
             Math.sin(rigAngle) * rigHorizontal
         ));
 
-        Vec3 ray = result.subtract(focus);
-        double rayLength = ray.length();
-        if (rayLength > 1.0E-4) {
-            HitResult hit = minecraft.level.clip(new ClipContext(
-                focus,
-                result,
-                ClipContext.Block.COLLIDER,
-                ClipContext.Fluid.NONE,
-                entity
-            ));
-            double targetClearance = 1.0;
-            if (hit.getType() != HitResult.Type.MISS) {
-                double safeDistance = Math.max(0.8, hit.getLocation().distanceTo(focus) - config.cameraMargin);
-                targetClearance = Mth.clamp(safeDistance / rayLength, 0.12, 1.0);
-            }
-            if (targetClearance < rigClearance) {
-                rigClearance = Math.max(targetClearance, rigClearance - frameDelta * 9.0);
-            } else {
-                rigClearance = Math.min(1.0, rigClearance + frameDelta * 2.5);
-            }
-            if (rigClearance < 1.0) {
-                result = focus.add(ray.scale(rigClearance));
-            }
+        // The inward safety response stays immediate; clampCamera only eases
+        // the outward recovery after the wall has cleared.
+        return clampCamera(entity, focus, result);
+    }
+
+    /**
+     * Slowly removes an avoidance offset once the direct shot is safe again.
+     * Each proposed step is checked before it is accepted, so returning to the
+     * original composition never pushes the camera through a corner.
+     */
+    private void recenterRig(Entity entity, Vec3 focus, double baseAngle,
+                             double baseHorizontal, double baseVertical) {
+        if (!rigReady) {
+            return;
         }
-        return result;
+        if (Math.abs(rigAngleOffset) < 0.001
+            && Math.abs(rigHeightOffset) < 0.001
+            && Math.abs(rigDistanceFactor - 1.0) < 0.001) {
+            return;
+        }
+        double blend = 1.0 - Math.exp(-RIG_RECENTER_INTERVAL * RIG_RECENTER_RATE);
+        double nextAngle = rigAngleOffset * (1.0 - blend);
+        double nextHeight = rigHeightOffset * (1.0 - blend);
+        double nextDistance = 1.0 + (rigDistanceFactor - 1.0) * (1.0 - blend);
+        Candidate proposed = new Candidate(
+            baseAngle + nextAngle,
+            baseHorizontal * nextDistance,
+            baseVertical + nextHeight
+        );
+        if (isClear(entity, focus, candidatePosition(focus, proposed))) {
+            rigAngleOffset = nextAngle;
+            rigHeightOffset = nextHeight;
+            rigDistanceFactor = nextDistance;
+        }
     }
 
     private Candidate chooseCandidate(Entity entity, Vec3 focus, double baseAngle, double baseHorizontal, double baseVertical) {
-        boolean fast = dynamicEnabled && speedEase() > 0.45;
+        boolean fast = speedEase() > 0.45;
         boolean contextual = config.shot == Shot.DYNAMIC && (miningWeight > 0.15 || combatWeight > 0.15);
-        double maxAngle = fast || contextual ? 1.05 : Math.PI;
+        double currentAngle = rigReady ? baseAngle + rigAngleOffset : baseAngle;
+        double currentHorizontal = baseHorizontal * (rigReady ? rigDistanceFactor : 1.0);
+        double currentVertical = baseVertical + (rigReady ? rigHeightOffset : 0.0);
+        double continuityWeight = fast || contextual ? 2.2 : 1.2;
 
+        // Search the whole circle before shortening the boom. A strong penalty
+        // for leaving the current side of the player, plus a smaller penalty for
+        // leaving the authored angle, keeps the rig from flip-flopping between
+        // equally valid corners while still letting it find a wide-open angle.
         for (double factor : RIG_DISTANCE_FACTORS) {
             Candidate best = null;
             double bestScore = Double.MAX_VALUE;
             for (double angleOffset : RIG_ANGLE_OFFSETS) {
-                if (Math.abs(angleOffset) > maxAngle + 1.0E-6) {
-                    continue;
-                }
                 for (double heightOffset : RIG_HEIGHT_OFFSETS) {
                     Candidate candidate = new Candidate(
                         baseAngle + angleOffset,
@@ -959,18 +1285,17 @@ public final class CineCamera {
                     if (!isClear(entity, focus, position)) {
                         continue;
                     }
-                    double score = Math.abs(angleOffset) * 1.8
-                        + Math.abs(heightOffset) * 0.65
-                        + (1.0 - factor) * 3.0;
-                    if (rigReady && candidate.closeTo(
-                        baseAngle + rigAngleOffset,
-                        baseHorizontal * rigDistanceFactor,
-                        baseVertical + rigHeightOffset
-                    )) {
-                        score -= 0.35;
-                    }
+                    double anglePenalty = fast || contextual ? 2.2 : 1.35;
+                    double angleDelta = Math.abs(Math.toRadians(Mth.wrapDegrees(
+                        Math.toDegrees(candidate.angle - currentAngle))));
+                    double score = Math.abs(angleOffset) * anglePenalty
+                        + Math.abs(heightOffset) * (fast ? 0.42 : 0.65)
+                        + (1.0 - factor) * 4.8
+                        + angleDelta * continuityWeight
+                        + Math.abs(candidate.vertical - currentVertical) * 0.65
+                        + Math.abs(candidate.horizontal - currentHorizontal) * 0.35;
                     if (heightOffset > 0.0) {
-                        score -= 0.05;
+                        score -= 0.08;
                     }
                     if (score < bestScore) {
                         bestScore = score;
@@ -983,7 +1308,7 @@ public final class CineCamera {
             }
         }
 
-        return new Candidate(baseAngle, Math.min(1.2, baseHorizontal), 0.6);
+        return new Candidate(currentAngle, Math.min(1.2, currentHorizontal), currentVertical);
     }
 
     private Vec3 candidatePosition(Vec3 focus, Candidate candidate) {
@@ -999,7 +1324,7 @@ public final class CineCamera {
         if (minecraft.level == null) {
             return true;
         }
-        if (nearSolid(minecraft, candidate)) {
+        if (!isCameraSpaceClear(entity, candidate)) {
             return false;
         }
         Vec3 ray = candidate.subtract(focus);
@@ -1024,38 +1349,135 @@ public final class CineCamera {
         rigHeightOffset = 0.0;
         rigDistanceFactor = 1.0;
         rigSearchTimer = 0.0;
-        rigClearance = 1.0;
+        resetClampSmoothing();
     }
 
-    private boolean nearSolid(Minecraft minecraft, Vec3 pos) {
-        if (solidAt(minecraft, pos)) {
+    private void resetClampSmoothing() {
+        clampOrigin = null;
+        clampDirection = null;
+        clampDistance = -1.0;
+    }
+
+    /**
+     * Hard collision clamp used after all framing has been blended. The centre
+     * ray and the camera volume are both enforced, so a thin wall can never
+     * occupy the same frame position as the lens. Pulling away from a wall is
+     * eased only after the candidate position has passed the collision test;
+     * moving into a wall remains immediate.
+     */
+    private Vec3 clampCamera(Entity entity, Vec3 focus, Vec3 desired) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null) {
+            return desired;
+        }
+        // Normally the look target is the safest place to retreat towards.
+        // If a combat or mining focus sits inside geometry, use the player's
+        // eye instead so the clamp can never pull the lens into that block.
+        Vec3 origin = isPointClear(entity, focus) ? focus : entity.getEyePosition();
+        if (!isPointClear(entity, origin)) {
+            origin = focus;
+        }
+        Vec3 offset = desired.subtract(origin);
+        double length = offset.length();
+        if (length <= 1.0E-4) {
+            resetClampSmoothing();
+            return desired;
+        }
+        Vec3 direction = offset.scale(1.0 / length);
+        double maxDistance = length;
+        HitResult hit = minecraft.level.clip(new ClipContext(
+            origin,
+            desired,
+            ClipContext.Block.COLLIDER,
+            ClipContext.Fluid.NONE,
+            entity
+        ));
+        if (hit.getType() != HitResult.Type.MISS) {
+            double clearance = Mth.clamp(config.cameraMargin, 0.05, 1.5);
+            maxDistance = Mth.clamp(
+                hit.getLocation().distanceTo(origin) - clearance,
+                0.0,
+                length
+            );
+        }
+
+        // The centre ray can miss while the camera volume clips a corner.
+        // Scan back from the preferred point and take the furthest volume-clear
+        // position. This also handles a player standing inside the clearance
+        // radius: open space can start slightly farther out than the eye.
+        if (!isCameraSpaceClear(entity, origin.add(direction.scale(maxDistance)))) {
+            double clearDistance = 0.0;
+            boolean found = false;
+            for (int i = 32; i >= 0; i--) {
+                double distance = maxDistance * i / 32.0;
+                if (isCameraSpaceClear(entity, origin.add(direction.scale(distance)))) {
+                    clearDistance = distance;
+                    found = true;
+                    break;
+                }
+            }
+            maxDistance = found ? clearDistance : 0.0;
+        }
+
+        double distance = maxDistance;
+        if (clampOrigin != null && clampDirection != null && clampDistance >= 0.0
+            && origin.distanceToSqr(clampOrigin) < 2.25
+            && clampDirection.dot(direction) > 0.96) {
+            if (maxDistance < clampDistance) {
+                // A new wall or corner: get out immediately.
+                distance = maxDistance;
+            } else {
+                // The wall has cleared: ease the boom back out instead of
+                // popping. The result is still checked before it is returned.
+                double outward = 1.0 - Math.exp(-frameDelta * CLAMP_OUT_RATE);
+                distance = clampDistance + (maxDistance - clampDistance) * outward;
+            }
+        }
+        distance = Math.min(distance, maxDistance);
+        Vec3 result = origin.add(direction.scale(distance));
+        if (!isCameraSpaceClear(entity, result)) {
+            result = origin.add(direction.scale(maxDistance));
+            distance = maxDistance;
+        }
+        clampOrigin = origin;
+        clampDirection = direction;
+        clampDistance = distance;
+        return result;
+    }
+
+    private boolean isPointClear(Entity entity, Vec3 pos) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null) {
             return true;
         }
-        double radius = 0.3;
-        return solidAt(minecraft, pos.add(radius, 0.0, 0.0))
-            || solidAt(minecraft, pos.add(-radius, 0.0, 0.0))
-            || solidAt(minecraft, pos.add(0.0, radius, 0.0))
-            || solidAt(minecraft, pos.add(0.0, -radius, 0.0))
-            || solidAt(minecraft, pos.add(0.0, 0.0, radius))
-            || solidAt(minecraft, pos.add(0.0, 0.0, -radius));
+        double radius = 0.05;
+        AABB box = new AABB(
+            pos.x - radius, pos.y - radius, pos.z - radius,
+            pos.x + radius, pos.y + radius, pos.z + radius
+        );
+        return minecraft.level.noBlockCollision(entity, box);
     }
 
-    private boolean solidAt(Minecraft minecraft, Vec3 pos) {
+    private boolean isCameraSpaceClear(Entity entity, Vec3 pos) {
+        Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
-            return false;
+            return true;
         }
-        BlockPos blockPos = BlockPos.containing(pos.x, pos.y, pos.z);
-        return !minecraft.level.getBlockState(blockPos).getCollisionShape(minecraft.level, blockPos).isEmpty();
+        double radius = cameraRadius();
+        AABB box = new AABB(
+            pos.x - radius, pos.y - radius, pos.z - radius,
+            pos.x + radius, pos.y + radius, pos.z + radius
+        );
+        return minecraft.level.noBlockCollision(entity, box);
+    }
+
+    private double cameraRadius() {
+        return Mth.clamp(config.cameraMargin, 0.28, 0.8);
     }
 
     private record Framing(Vec3 position, Vec3 focus) {
     }
 
     private record Candidate(double angle, double horizontal, double vertical) {
-        private boolean closeTo(double angle, double horizontal, double vertical) {
-            return Math.abs(Mth.wrapDegrees(Math.toDegrees(this.angle - angle))) < 10.0
-                && Math.abs(this.horizontal - horizontal) < 0.35
-                && Math.abs(this.vertical - vertical) < 0.35;
-        }
     }
 }

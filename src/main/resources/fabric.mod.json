@@ -3,7 +3,7 @@
 	"id": "cinecam",
 	"version": "${version}",
 	"name": "Cinecam",
-	"description": "Ten cinematic free-camera shots, including a Dynamic camera with enemy-aware combat framing, open-angle collision avoidance, predictive 400%+ movement, and a full-frame mode. Open the studio with /freecam for animated shot previews and live settings. Local-player see-through keeps the subject readable behind occluding terrain. Client-side only.",
+	"description": "Nine cinematic free-camera shots, including a Dynamic camera with enemy-aware combat framing, full-circle collision avoidance with smooth wall recovery, teleport pursuit for AOTV-style jumps, speed-stabilized chase framing, and a full-frame mode. Open the studio with /freecam for a three-column editing desk with a live path monitor and tabbed controls. A separate manual mode layers WASD pan and wheel zoom over any shot. Local-player see-through keeps the subject readable behind occluding terrain. Client-side only.",
 	"authors": [
 		"Cinecam contributors"
 	],

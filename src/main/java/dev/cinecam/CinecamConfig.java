@@ -2,6 +2,8 @@ package dev.cinecam;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.util.Mth;
 import org.slf4j.Logger;
@@ -20,7 +22,7 @@ public final class CinecamConfig {
     private static final Path PATH = FabricLoader.getInstance().getConfigDir().resolve("cinecam.json");
 
     /** Config schema version, used for one-time migrations. */
-    public int configVersion = 2;
+    public int configVersion = 3;
     /** Active shot. Dynamic adapts to what the player is doing. */
     public Shot shot = Shot.DYNAMIC;
     /** Adaptive mining/combat framing for the Dynamic shot. */
@@ -68,7 +70,14 @@ public final class CinecamConfig {
         CinecamConfig config = new CinecamConfig();
         if (Files.exists(PATH)) {
             try (Reader reader = Files.newBufferedReader(PATH)) {
-                CinecamConfig loaded = GSON.fromJson(reader, CinecamConfig.class);
+                JsonObject object = JsonParser.parseReader(reader).getAsJsonObject();
+                // Figure 8 was removed in 1.8.1. Translate an old selection
+                // before Gson sees the enum and rejects the whole config.
+                if (object.has("shot") && object.get("shot").isJsonPrimitive()
+                    && "FIGURE8".equalsIgnoreCase(object.get("shot").getAsString())) {
+                    object.addProperty("shot", Shot.DYNAMIC.name());
+                }
+                CinecamConfig loaded = GSON.fromJson(object, CinecamConfig.class);
                 if (loaded != null) {
                     config = loaded;
                 }
@@ -96,6 +105,9 @@ public final class CinecamConfig {
         if (configVersion < 2) {
             letterbox = false;
             configVersion = 2;
+        }
+        if (configVersion < 3) {
+            configVersion = 3;
         }
         if (shot == null) {
             shot = Shot.DYNAMIC;
