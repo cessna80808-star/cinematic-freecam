@@ -5,12 +5,17 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.CompareOp;
 import dev.cinecam.CinecamClient;
 import dev.cinecam.camera.CineCamera;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.BindGroupLayouts;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,8 +30,9 @@ import java.util.Map;
  *
  * <p>The replacement render type keeps the vanilla entity shader and texture
  * but uses {@link CompareOp#ALWAYS_PASS} with depth writes off. The player is
- * still depth-sorted against nothing, so it appears through walls without
- * changing the world mesh or the camera collision rig.</p>
+ * not depth-sorted against itself, so a far limb can draw over a near one. It
+ * is used only while terrain blocks the view; otherwise the player is drawn
+ * normally.</p>
  */
 public final class SeeThroughPlayer {
     private static final Logger LOGGER = LoggerFactory.getLogger("cinecam");
@@ -52,7 +58,26 @@ public final class SeeThroughPlayer {
         CineCamera camera = CinecamClient.cameraInstance();
         return camera != null
             && camera.isEngaged()
-            && camera.config().seeThroughPlayer;
+            && camera.config().seeThroughPlayer
+            && playerBlocked();
+    }
+
+    /** Whether terrain sits between the camera and the player's eyes or feet. */
+    private static boolean playerBlocked() {
+        Minecraft minecraft = Minecraft.getInstance();
+        LocalPlayer player = minecraft.player;
+        if (player == null || minecraft.level == null) {
+            return false;
+        }
+        Vec3 camera = minecraft.gameRenderer.mainCamera().position();
+        return blocked(minecraft, player, camera, player.getEyePosition())
+            || blocked(minecraft, player, camera, player.position().add(0.0, 0.1, 0.0));
+    }
+
+    private static boolean blocked(Minecraft minecraft, LocalPlayer player, Vec3 from, Vec3 to) {
+        return minecraft.level.clip(new ClipContext(
+            from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player
+        )).getType() != HitResult.Type.MISS;
     }
 
     /**
@@ -100,7 +125,8 @@ public final class SeeThroughPlayer {
                     .withShaderDefine("ALPHA_CUTOUT", 0.1F)
                     .withShaderDefine("PER_FACE_LIGHTING")
                     .withBindGroupLayout(BindGroupLayouts.SAMPLER1)
-                    .withCull(false)
+                    // Without depth, culling is what stops back faces drawing over front faces.
+                    .withCull(true)
                     .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
                     .build());
             } catch (Throwable throwable) {
