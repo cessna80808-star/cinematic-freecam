@@ -43,7 +43,8 @@ framings:
   smoothed, and the collision solver keeps the shot out of nearby walls.
 - **Exploring** — when you are slow it drifts in a gentle orbit. As speed builds
   it blends into a stable chase camera behind your look direction, so 400%+
-  SkyBlock movement stays readable instead of orbiting into terrain.
+  SkyBlock movement stays readable instead of orbiting into terrain. When you
+  stop, the orbit picks up from behind you rather than swinging through you.
 - **Teleporting** — a detected jump switches to a chase behind the jump
   direction, not the view direction, and stays there long enough to frame the
   next jump in a chain.
@@ -87,21 +88,18 @@ smoothly as speed drops. This applies in classic mode too.
 
 ## Geometry-aware camera
 
-Cinecam searches a full circle of angles and several heights around the subject,
-testing both line of sight and a camera-sized collision volume. It keeps full
-boom distance whenever possible and swings around a wall rather than
-immediately pushing in; only if no open angle exists does it shorten. The chosen
-rig and the outward boom recovery ease, but moving into geometry is immediate:
-every rendered frame is clipped against blocks and then checked with a
-camera-sized volume. When a wall clears, the boom eases back out instead of
-popping. The rig only re-searches when its current safe target becomes blocked,
-and prefers to stay on the same side, so it does not flip between corners and
-bounce. If the aim point itself is blocked, the clamp retreats toward the
-player's eye. Set `avoidGeometry` to `false` only if you deliberately want a
-free camera.
+Cinecam treats the camera as a boom from the player's eyes. It scores angles and
+heights around the player by how much free space they have, and only changes
+direction when another one is clearly better, so it does not flip between
+corners. The boom pulls in quickly when something blocks it, then holds and
+releases slowly, so a wall cannot pump it in and out. Moving into geometry stays
+immediate: every rendered frame is clipped against blocks and then checked with
+a camera-sized volume. Set `avoidGeometry` to `false` only if you deliberately
+want a free camera.
 
-While a shot is engaged, Cinecam also draws the local player through occluding
-terrain using a depth-test-free copy of the vanilla entity render type. This is
+When terrain blocks the view of the local player, Cinecam draws them through it
+using a depth-test-free copy of the vanilla entity render type. With a clear view
+the player is drawn normally. This is
 deliberately a player-only pass rather than section deletion: chunk sections are
 16x16x16, so hiding a section at the normal six-block camera distance would
 remove the floor and walls around the player as well. Toggle it with
@@ -254,7 +252,7 @@ the shorter path.
 | `roll` | `2.5` | Maximum Dutch-angle roll in degrees. |
 | `shake` | `0.02` | Handheld micro-shake in blocks (`0` disables). |
 | `avoidGeometry` | `true` | Clip the camera against walls, floors and ceilings. |
-| `seeThroughPlayer` | `true` | Draw the local player through terrain between the freecam and the subject. |
+| `seeThroughPlayer` | `true` | Draw the local player through terrain when it blocks the view. |
 | `cameraMargin` | `0.35` | Gap kept between the camera and the surface it clipped against. |
 | `cutDip` | `true` | Dip through black when the shot changes. |
 | `directorSeconds` | `20.0` | Seconds between automatic shot changes (`0` disables). |
@@ -335,7 +333,8 @@ without editing the file:
   key for screenshots rather than mining with the cinematic camera running.
 - Purely client-side: other players only ever see your normal view.
 - See-through applies to the local player's base model. Armour layers and name
-  tags can still be hidden by thick geometry.
+  tags can still be hidden by thick geometry, and while it is active a far limb
+  can draw over a near one.
 - Manual pan is an aim offset, not a free-flying camera, and it does not suppress
   player movement: WASD also moves you while manual framing is on. Manual state
   is session-only and is not saved to the config file.

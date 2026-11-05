@@ -30,9 +30,7 @@ public final class CineCamera {
     private static final double CUT_SECONDS = 0.35;
     private static final double MAX_COMBAT_DISTANCE = 18.0;
     private static final double SETTLE_SECONDS = 0.18;
-    private static final double RIG_SEARCH_INTERVAL = 0.18;
-    private static final double RIG_RECENTER_INTERVAL = 0.12;
-    private static final double RIG_RECENTER_RATE = 1.6;
+    private static final double RIG_SEARCH_INTERVAL = 0.22;
     private static final double CLAMP_OUT_RATE = 4.0;
     private static final double TELEPORT_MIN_DISTANCE = 2.5;
     private static final double TELEPORT_MIN_SPEED = 30.0;
@@ -44,15 +42,20 @@ public final class CineCamera {
     private static final double MANUAL_ZOOM_STEP = 4.0;
     private static final double MANUAL_ZOOM_EASE = 12.0;
     private static final double[] RIG_ANGLE_OFFSETS = {
-        0.0, 0.393, -0.393, 0.785, -0.785, 1.178, -1.178, 1.571,
-        -1.571, 1.963, -1.963, 2.356, -2.356, 2.749, -2.749, Math.PI
+        0.0, 0.18, -0.18, 0.35, -0.35, 0.70, -0.70, 1.05, -1.05, 1.40, -1.40, 2.10, -2.10
     };
-    private static final double[] RIG_HEIGHT_OFFSETS = {
-        0.0, 0.8, -0.8, 1.6, -1.6, 2.4, 3.2
+    private static final double[] RIG_HEIGHT_OFFSETS = {0.0, 0.9, -0.9, 1.8, -1.8, 2.6};
+    private static final double RIG_SWITCH_MARGIN = 0.6;
+    private static final double RIG_RELEASE_HOLD = 0.45;
+    private static final double RIG_MIN_BOOM = 0.8;
+    private static final double RIG_SHORT_BOOM = 2.5;
+    private static final Vec3[] RIG_PROBES = {
+        Vec3.ZERO,
+        new Vec3(0.3, 0.0, 0.0), new Vec3(-0.3, 0.0, 0.0),
+        new Vec3(0.0, 0.3, 0.0), new Vec3(0.0, -0.3, 0.0),
+        new Vec3(0.0, 0.0, 0.3), new Vec3(0.0, 0.0, -0.3)
     };
-    private static final double[] RIG_DISTANCE_FACTORS = {
-        1.0, 0.86, 0.72, 0.58, 0.44, 0.30
-    };
+    private static final double TICKS_PER_SECOND = 20.0;
 
     private final CinecamConfig config;
 
@@ -65,6 +68,7 @@ public final class CineCamera {
     private double cutFade;
     private double blend;
     private double phase;
+    private double dynamicOrbitOffset;
     private double frameDelta;
     private long lastFrameNanos = -1L;
     private Vec3 anchor;
@@ -84,14 +88,14 @@ public final class CineCamera {
     private double miningWeight;
     private double combatWeight;
 
-    private double rigAngle;
-    private double rigHorizontal;
-    private double rigVertical;
     private boolean rigReady;
     private double rigAngleOffset;
     private double rigHeightOffset;
-    private double rigDistanceFactor = 1.0;
+    private double rigSmoothedAngle;
+    private double rigSmoothedHeight;
     private double rigSearchTimer;
+    private double rigClearance = 1.0;
+    private double rigReleaseTimer;
     private Vec3 clampOrigin;
     private Vec3 clampDirection;
     private double clampDistance = -1.0;
@@ -271,6 +275,7 @@ public final class CineCamera {
             this.engaged = true;
             this.blend = 0.0;
             this.phase = 0.0;
+            this.dynamicOrbitOffset = 0.0;
             this.lastFrameNanos = -1L;
             this.anchor = null;
             this.staticAnchor = null;
@@ -745,7 +750,16 @@ public final class CineCamera {
         switch (config.shot) {
             case DYNAMIC -> {
                 double speed = dynamicEnabled && config.follow ? speedEase() : 0.0;
-                theta = t * 0.14;
+                double pursuit = config.follow ? Mth.clamp(teleportEnergy * 1.7, 0.0, 1.0) : 0.0;
+                double chase = Math.max(speed, pursuit);
+                if (chase > 0.001) {
+                    // Keep the orbit behind the player while chasing, or releasing the chase would swing the camera through them.
+                    Vec3 forward = pursuit > 0.0 && teleportDirection.lengthSqr() > 1.0E-6 ? teleportDirection : forwardFromYaw(framingYaw);
+                    Vec3 behind = forward.scale(-1.0);
+                    double error = Math.atan2(behind.z, behind.x) - (t * 0.14 + dynamicOrbitOffset);
+                    dynamicOrbitOffset += Math.IEEEremainder(error, 2.0 * Math.PI) * (1.0 - Math.exp(-frameDelta * 6.0 * chase));
+                }
+                theta = t * 0.14 + dynamicOrbitOffset;
                 radius = config.radius + 2.2 * speed + 0.12 * Math.sin(t * 0.11);
                 height = config.height + 0.55 * speed + 0.22 * Math.sin(t * 0.29);
                 roll = config.roll * 0.22 * Math.sin(t * 0.21);
@@ -841,7 +855,10 @@ public final class CineCamera {
             lookAt = stabilized.focus();
         }
         roll *= 1.0 - 0.7 * motionStability;
-        pos = resolveGeometry(cameraEntity, lookAt, pos);
+        // The look target can sit inside a wall (lead, mining offset, combat
+        // midpoint), so collision rays start from the player's eyes instead.
+        Vec3 pivot = config.follow ? cameraEntity.getEyePosition(partialTicks) : baseFocus;
+        pos = resolveGeometry(cameraEntity, pivot, pos);
         lookAt = applyManualPan(pos, lookAt);
 
         Vec3 direction = lookAt.subtract(pos);
@@ -1086,15 +1103,22 @@ public final class CineCamera {
     }
 
     private static double horizontalSpeed(Entity entity) {
-        Vec3 movement = entity.getDeltaMovement();
-        return Math.sqrt(movement.x * movement.x + movement.z * movement.z);
+        return tickVelocity(entity).length();
     }
 
     private static Vec3 horizontalVelocity(Entity entity) {
-        Vec3 movement = entity.getDeltaMovement();
-        Vec3 flat = new Vec3(movement.x, 0.0, movement.z);
+        Vec3 flat = tickVelocity(entity);
         double length = flat.length();
         return length > 24.0 ? flat.scale(24.0 / length) : flat;
+    }
+
+    /**
+     * Horizontal blocks per second actually moved last tick. getDeltaMovement is
+     * read after friction, so on the ground it reports about half the real speed.
+     */
+    private static Vec3 tickVelocity(Entity entity) {
+        Vec3 moved = entity.position().subtract(entity.oldPosition());
+        return new Vec3(moved.x, 0.0, moved.z).scale(TICKS_PER_SECOND);
     }
 
     private static Vec3 forwardFromYaw(double yawDegrees) {
@@ -1157,11 +1181,12 @@ public final class CineCamera {
     }
 
     /**
-     * Smooths the camera around the focus and looks for an open angle instead of
-     * snapping straight into the player when a wall appears. Full distance is
-     * preferred; shorter distances are only used when no open angle exists.
+     * Treats the camera as a boom from the player's eyes. The boom's length
+     * follows the free space continuously: it pulls in quickly, then holds and
+     * releases slowly, so a wall cannot pump it in and out. Its direction only
+     * changes when another one is clearly better (see searchRig).
      */
-    private Vec3 resolveGeometry(Entity entity, Vec3 focus, Vec3 desired) {
+    private Vec3 resolveGeometry(Entity entity, Vec3 pivot, Vec3 desired) {
         Minecraft minecraft = Minecraft.getInstance();
         if (!config.avoidGeometry || minecraft.level == null) {
             rigReady = false;
@@ -1169,186 +1194,137 @@ public final class CineCamera {
             return desired;
         }
 
-        Vec3 offset = desired.subtract(focus);
-        double baseHorizontal = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
-        if (baseHorizontal < 1.0E-4) {
-            return clampCamera(entity, focus, desired);
-        }
-
+        Vec3 offset = desired.subtract(pivot);
         double baseAngle = Math.atan2(offset.z, offset.x);
-        double baseVertical = offset.y;
+        double baseHorizontal = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
+
         rigSearchTimer -= frameDelta;
-
-        Candidate current = new Candidate(
-            baseAngle + rigAngleOffset,
-            baseHorizontal * rigDistanceFactor,
-            baseVertical + rigHeightOffset
-        );
-        Vec3 currentPosition = candidatePosition(focus, current);
-        boolean blocked = !isClear(entity, focus, currentPosition);
-        // Search only when the current safe target actually needs replacing.
-        // The old code ran the full global scan every 0.18 s even in open air,
-        // and re-ran it every frame while clamped, which made the rig flip sides
-        // around corners. Recentering is a separate, small, checked step.
-        if (!rigReady || (rigSearchTimer <= 0.0 && blocked)) {
-            Candidate chosen = chooseCandidate(entity, focus, baseAngle, baseHorizontal, baseVertical);
-            rigAngleOffset = Math.toRadians(Mth.wrapDegrees(Math.toDegrees(chosen.angle - baseAngle)));
-            rigDistanceFactor = baseHorizontal < 1.0E-4 ? 1.0 : chosen.horizontal / baseHorizontal;
-            rigHeightOffset = chosen.vertical - baseVertical;
+        if (!rigReady || rigSearchTimer <= 0.0) {
+            searchRig(entity, pivot, baseAngle, baseHorizontal, offset.y);
             rigSearchTimer = RIG_SEARCH_INTERVAL;
-        } else if (rigReady && rigSearchTimer <= 0.0) {
-            recenterRig(entity, focus, baseAngle, baseHorizontal, baseVertical);
-            rigSearchTimer = RIG_RECENTER_INTERVAL;
         }
 
-        double targetAngle = baseAngle + rigAngleOffset;
-        double targetHorizontal = baseHorizontal * rigDistanceFactor;
-        double targetVertical = baseVertical + rigHeightOffset;
-        if (!rigReady) {
-            rigAngle = targetAngle;
-            rigHorizontal = targetHorizontal;
-            rigVertical = targetVertical;
-            rigReady = true;
+        if (rigReady) {
+            double swing = 1.0 - Math.exp(-frameDelta * 2.8);
+            rigSmoothedAngle += (rigAngleOffset - rigSmoothedAngle) * swing;
+            rigSmoothedHeight += (rigHeightOffset - rigSmoothedHeight) * swing;
         } else {
-            double angleStep = Math.toRadians(Mth.wrapDegrees(Math.toDegrees(targetAngle - rigAngle)));
-            rigAngle += angleStep * (1.0 - Math.exp(-frameDelta * 7.0));
-            double horizontalRate = targetHorizontal < rigHorizontal ? 8.0 : 3.2;
-            rigHorizontal += (targetHorizontal - rigHorizontal) * (1.0 - Math.exp(-frameDelta * horizontalRate));
-            rigVertical += (targetVertical - rigVertical) * (1.0 - Math.exp(-frameDelta * 5.0));
+            rigSmoothedAngle = rigAngleOffset;
+            rigSmoothedHeight = rigHeightOffset;
         }
 
-        Vec3 result = focus.add(new Vec3(
-            Math.cos(rigAngle) * rigHorizontal,
-            rigVertical,
-            Math.sin(rigAngle) * rigHorizontal
-        ));
-
+        Vec3 target = rigPosition(pivot, baseAngle + rigSmoothedAngle, baseHorizontal, offset.y + rigSmoothedHeight);
+        double open = openFraction(minecraft, entity, pivot, target);
+        if (!rigReady) {
+            rigClearance = open;
+            rigReady = true;
+        } else if (open < rigClearance) {
+            rigClearance += (open - rigClearance) * (1.0 - Math.exp(-frameDelta * 18.0));
+            rigReleaseTimer = RIG_RELEASE_HOLD;
+        } else if (rigReleaseTimer > 0.0) {
+            rigReleaseTimer -= frameDelta;
+        } else {
+            rigClearance += (open - rigClearance) * (1.0 - Math.exp(-frameDelta * 1.6));
+        }
+        // The boom length changes between shots, so re-apply the floor in blocks.
+        Vec3 boom = target.subtract(pivot);
         // The inward safety response stays immediate; clampCamera only eases
         // the outward recovery after the wall has cleared.
-        return clampCamera(entity, focus, result);
+        return clampCamera(entity, pivot, pivot.add(boom.scale(
+            Math.max(rigClearance, Math.min(open, RIG_MIN_BOOM / boom.length()))
+        )));
     }
 
     /**
-     * Slowly removes an avoidance offset once the direct shot is safe again.
-     * Each proposed step is checked before it is accepted, so returning to the
-     * original composition never pushes the camera through a corner.
+     * Looks for a more open direction around the player. Scores are continuous
+     * and a move has to win by RIG_SWITCH_MARGIN, so the rig cannot flip back
+     * and forth at the edge of an obstruction.
      */
-    private void recenterRig(Entity entity, Vec3 focus, double baseAngle,
-                             double baseHorizontal, double baseVertical) {
-        if (!rigReady) {
-            return;
-        }
-        if (Math.abs(rigAngleOffset) < 0.001
-            && Math.abs(rigHeightOffset) < 0.001
-            && Math.abs(rigDistanceFactor - 1.0) < 0.001) {
-            return;
-        }
-        double blend = 1.0 - Math.exp(-RIG_RECENTER_INTERVAL * RIG_RECENTER_RATE);
-        double nextAngle = rigAngleOffset * (1.0 - blend);
-        double nextHeight = rigHeightOffset * (1.0 - blend);
-        double nextDistance = 1.0 + (rigDistanceFactor - 1.0) * (1.0 - blend);
-        Candidate proposed = new Candidate(
-            baseAngle + nextAngle,
-            baseHorizontal * nextDistance,
-            baseVertical + nextHeight
-        );
-        if (isClear(entity, focus, candidatePosition(focus, proposed))) {
-            rigAngleOffset = nextAngle;
-            rigHeightOffset = nextHeight;
-            rigDistanceFactor = nextDistance;
-        }
-    }
-
-    private Candidate chooseCandidate(Entity entity, Vec3 focus, double baseAngle, double baseHorizontal, double baseVertical) {
+    private void searchRig(Entity entity, Vec3 pivot, double baseAngle, double baseHorizontal, double baseVertical) {
+        Minecraft minecraft = Minecraft.getInstance();
         boolean fast = speedEase() > 0.45;
         boolean contextual = config.shot == Shot.DYNAMIC && (miningWeight > 0.15 || combatWeight > 0.15);
-        double currentAngle = rigReady ? baseAngle + rigAngleOffset : baseAngle;
-        double currentHorizontal = baseHorizontal * (rigReady ? rigDistanceFactor : 1.0);
-        double currentVertical = baseVertical + (rigReady ? rigHeightOffset : 0.0);
-        double continuityWeight = fast || contextual ? 2.2 : 1.2;
+        double maxAngle = fast || contextual ? 1.05 : Math.PI;
 
-        // Search the whole circle before shortening the boom. A strong penalty
-        // for leaving the current side of the player, plus a smaller penalty for
-        // leaving the authored angle, keeps the rig from flip-flopping between
-        // equally valid corners while still letting it find a wide-open angle.
-        for (double factor : RIG_DISTANCE_FACTORS) {
-            Candidate best = null;
-            double bestScore = Double.MAX_VALUE;
-            for (double angleOffset : RIG_ANGLE_OFFSETS) {
-                for (double heightOffset : RIG_HEIGHT_OFFSETS) {
-                    Candidate candidate = new Candidate(
-                        baseAngle + angleOffset,
-                        baseHorizontal * factor,
-                        baseVertical + heightOffset
-                    );
-                    Vec3 position = candidatePosition(focus, candidate);
-                    if (!isClear(entity, focus, position)) {
-                        continue;
-                    }
-                    double anglePenalty = fast || contextual ? 2.2 : 1.35;
-                    double angleDelta = Math.abs(Math.toRadians(Mth.wrapDegrees(
-                        Math.toDegrees(candidate.angle - currentAngle))));
-                    double score = Math.abs(angleOffset) * anglePenalty
-                        + Math.abs(heightOffset) * (fast ? 0.42 : 0.65)
-                        + (1.0 - factor) * 4.8
-                        + angleDelta * continuityWeight
-                        + Math.abs(candidate.vertical - currentVertical) * 0.65
-                        + Math.abs(candidate.horizontal - currentHorizontal) * 0.35;
-                    if (heightOffset > 0.0) {
-                        score -= 0.08;
-                    }
-                    if (score < bestScore) {
-                        bestScore = score;
-                        best = candidate;
-                    }
+        double bestScore = Double.MAX_VALUE;
+        if (rigReady) {
+            bestScore = rigScore(minecraft, entity, pivot, rigPosition(
+                pivot, baseAngle + rigAngleOffset, baseHorizontal, baseVertical + rigHeightOffset
+            ), rigCost(rigAngleOffset, rigHeightOffset)) - RIG_SWITCH_MARGIN;
+        }
+
+        for (double angleOffset : RIG_ANGLE_OFFSETS) {
+            if (Math.abs(angleOffset) > maxAngle + 1.0E-6) {
+                continue;
+            }
+            for (double heightOffset : RIG_HEIGHT_OFFSETS) {
+                double cost = rigCost(angleOffset, heightOffset);
+                if (cost >= bestScore) {
+                    continue;
+                }
+                double score = rigScore(minecraft, entity, pivot, rigPosition(
+                    pivot, baseAngle + angleOffset, baseHorizontal, baseVertical + heightOffset
+                ), cost);
+                if (score < bestScore) {
+                    bestScore = score;
+                    rigAngleOffset = angleOffset;
+                    rigHeightOffset = heightOffset;
                 }
             }
-            if (best != null) {
-                return best;
+        }
+    }
+
+    private static double rigCost(double angleOffset, double heightOffset) {
+        return Math.abs(angleOffset) * 1.8 + Math.abs(heightOffset) * 0.65;
+    }
+
+    /** Lower is better. A boom too short to frame the player is worth a large swing to escape. */
+    private double rigScore(Minecraft minecraft, Entity entity, Vec3 pivot, Vec3 target, double cost) {
+        double open = openFraction(minecraft, entity, pivot, target);
+        double boom = open * target.distanceTo(pivot);
+        return cost + (1.0 - open) * 3.0 + Math.max(0.0, RIG_SHORT_BOOM - boom) * 2.0;
+    }
+
+    private static Vec3 rigPosition(Vec3 pivot, double angle, double horizontal, double vertical) {
+        return pivot.add(Math.cos(angle) * horizontal, vertical, Math.sin(angle) * horizontal);
+    }
+
+    /**
+     * The usable fraction of the boom from pivot to target. The probes fan out
+     * around the target, so a corner shortens the boom before the centre ray
+     * reaches it and the camera keeps its distance from surfaces it runs along.
+     */
+    private double openFraction(Minecraft minecraft, Entity entity, Vec3 pivot, Vec3 target) {
+        double length = target.distanceTo(pivot);
+        if (length < 1.0E-4) {
+            return 1.0;
+        }
+        double open = 1.0;
+        for (Vec3 probe : RIG_PROBES) {
+            HitResult hit = minecraft.level.clip(new ClipContext(
+                pivot,
+                target.add(probe),
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE,
+                entity
+            ));
+            if (hit.getType() != HitResult.Type.MISS) {
+                // The minimum boom must never push the camera through what it hit.
+                double distance = hit.getLocation().distanceTo(pivot);
+                double safe = Math.max(Math.min(RIG_MIN_BOOM, distance - 0.1), distance - config.cameraMargin);
+                open = Math.min(open, Math.max(0.0, safe) / length);
             }
         }
-
-        return new Candidate(currentAngle, Math.min(1.2, currentHorizontal), currentVertical);
-    }
-
-    private Vec3 candidatePosition(Vec3 focus, Candidate candidate) {
-        return focus.add(new Vec3(
-            Math.cos(candidate.angle) * candidate.horizontal,
-            candidate.vertical,
-            Math.sin(candidate.angle) * candidate.horizontal
-        ));
-    }
-
-    private boolean isClear(Entity entity, Vec3 focus, Vec3 candidate) {
-        Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.level == null) {
-            return true;
-        }
-        if (!isCameraSpaceClear(entity, candidate)) {
-            return false;
-        }
-        Vec3 ray = candidate.subtract(focus);
-        double length = ray.length();
-        if (length < 1.0E-4) {
-            return true;
-        }
-        HitResult hit = minecraft.level.clip(new ClipContext(
-            focus,
-            candidate,
-            ClipContext.Block.COLLIDER,
-            ClipContext.Fluid.NONE,
-            entity
-        ));
-        return hit.getType() == HitResult.Type.MISS
-            || hit.getLocation().distanceToSqr(focus) >= length * length - 0.01;
+        return open;
     }
 
     private void resetRig() {
         rigReady = false;
         rigAngleOffset = 0.0;
         rigHeightOffset = 0.0;
-        rigDistanceFactor = 1.0;
         rigSearchTimer = 0.0;
+        rigClearance = 1.0;
+        rigReleaseTimer = 0.0;
         resetClampSmoothing();
     }
 
@@ -1476,8 +1452,5 @@ public final class CineCamera {
     }
 
     private record Framing(Vec3 position, Vec3 focus) {
-    }
-
-    private record Candidate(double angle, double horizontal, double vertical) {
     }
 }
